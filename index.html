@@ -17,11 +17,11 @@
      and there are no inline event-handler attributes (event delegation via data-h-* in app.js).
      Do NOT add inline script blocks or inline event-handler attributes: they will be blocked. style-src keeps 'unsafe-inline' (style attributes).
      frame-ancestors is ignored in <meta>; clickjacking protection needs an HTTP header (Cloudflare/Netlify). -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://sqizirpsatofcoqshwer.supabase.co wss://sqizirpsatofcoqshwer.supabase.co; img-src 'self' data: blob:; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://sqizirpsatofcoqshwer.supabase.co wss://sqizirpsatofcoqshwer.supabase.co https://cdn.jsdelivr.net; img-src 'self' data: blob:; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"/>
 <link rel="manifest" href="manifest.json"/>
 <!-- Icons -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231E3A5F'/><text x='16' y='23' font-family='Arial' font-weight='900' font-size='14' fill='%23C9A84C' text-anchor='middle'>SP</text></svg>"/>
-<script src="supabase.min.js?v=4.1.0"></script>
+<script src="supabase.min.js?v=4.1.3"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -525,7 +525,7 @@ img,canvas,svg{max-width:100%;height:auto}
     <button data-h-click="h2" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 6px;border-radius:5px">☰</button>
     <div class="logo-sq">SP</div>
     <div class="logo-txt"><div class="t1">SP360 ERP</div><div class="t2">Smart Projects 360 · Kuwait</div></div>
-    <span data-h-click="h3" style="font-size:9px;color:var(--gold);background:#C9A84C18;border:1px solid #C9A84C33;border-radius:4px;padding:2px 6px;font-weight:700;cursor:pointer;flex-shrink:0;white-space:nowrap">v4.0</span>
+    <span data-h-click="h3" style="font-size:9px;color:var(--gold);background:#C9A84C18;border:1px solid #C9A84C33;border-radius:4px;padding:2px 6px;font-weight:700;cursor:pointer;flex-shrink:0;white-space:nowrap">v4.1</span>
     <span id="mfa-btn" data-h-click="h4" style="display:none;font-size:9px;color:#10B981;background:#10B98118;border:1px solid #10B98133;border-radius:4px;padding:2px 6px;font-weight:700;cursor:pointer;flex-shrink:0;white-space:nowrap">🔐 MFA</span>
     <button id="notif-bell" data-h-click="h5" style="position:relative;background:none;border:1px solid transparent;border-radius:8px;padding:5px 8px;cursor:pointer;display:flex;align-items:center;gap:5px;color:var(--muted);font-size:13px;transition:all .15s" title="Notifications">
       🔔
@@ -758,6 +758,6 @@ img,canvas,svg{max-width:100%;height:auto}
   </div>
 </div>
 
-<script src="app.js?v=4.1.0"></script>
+<script src="app.js?v=4.1.3"></script>
 </body>
 </html>

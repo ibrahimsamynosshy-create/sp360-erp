@@ -1,4 +1,4 @@
-/* SP360 Integrated Platform — application script (v4.1.0)
+/* SP360 Integrated Platform — application script (v4.1.3)
  * Loaded by index.html as <script src="app.js">. Must stay a classic (non-module) script:
  * top-level functions/lets are shared globals used by the data-h-* event delegation registry. */
 // ═══════════════════════════════════════════════════════════
@@ -265,12 +265,37 @@ const esc = s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt
 const jsArg = v=>esc(JSON.stringify(String(v==null?'':v)));
 
 let _toastT;
+// Network failures from supabase-js surface as "Failed to fetch" — translate to an actionable message
+const NET_ERR_RE=/Failed to fetch|NetworkError|Load failed|network request failed|ERR_INTERNET_DISCONNECTED/i;
 function showToast(msg,type='success'){
+  if(NET_ERR_RE.test(String(msg))){
+    msg='⚠️ Network error — nothing was saved. Your form is still open: check the connection and try again.';
+    type='error';
+  }
   const t=document.getElementById('toast');
   if(_toastT)clearTimeout(_toastT);
   t.textContent=msg;t.className=`toast show ${type}`;
   _toastT=setTimeout(()=>{t.className='toast';},3500);
 }
+
+// ── OFFLINE INDICATOR ─────────────────────────────────────────
+// Persistent banner while the browser is offline; saves made offline fail with a clear message
+// (showToast above) and modals stay open, so no typed data is lost.
+(function(){
+  const show=()=>{
+    if(document.getElementById('sp360-offline')) return;
+    const b=document.createElement('div');
+    b.id='sp360-offline'; b.setAttribute('role','status');
+    b.textContent='⚠️ You are offline — changes cannot be saved until the connection is restored.';
+    b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;background:#EF4444;color:#fff;'+
+      'font:600 12px/1.4 inherit;text-align:center;padding:6px 12px;box-shadow:0 2px 8px #0006';
+    document.body.appendChild(b);
+  };
+  const hide=()=>{ const b=document.getElementById('sp360-offline'); if(b){ b.remove(); showToast('✅ Back online'); } };
+  window.addEventListener('offline',show);
+  window.addEventListener('online',hide);
+  if(navigator.onLine===false) document.addEventListener('DOMContentLoaded',show);
+})();
 
 // CRITICAL_AUDIT_ACTIONS: audit failure on these is surfaced to user, not silently swallowed
 const CRITICAL_AUDIT_ACTIONS=new Set([
@@ -7194,13 +7219,16 @@ async function fetchNotifications(){
 
   try{
     // 1. Workflow — pending / overdue items
+    // FIX: workflow_items has no title/assigned_to/created_at columns (HTTP 400) — use real columns
     const {data:wf} = await sb.from('workflow_items')
-      .select('id,title,entity_type,status,created_at,assigned_to')
+      .select('*')
       .in('status',['pending','overdue'])
-      .order('created_at',{ascending:false})
+      .order('raised_date',{ascending:false})
       .limit(30);
 
     (wf||[]).forEach(w=>{
+      w.created_at = w.raised_date || w.created_at;
+      w.title = w.title || [w.ref_no, w.current_step].filter(Boolean).join(' — ');
       const age = Math.floor((now - new Date(w.created_at))/86400000);
       const isOverdue = w.status==='overdue' || age>3;
       notifs.push({
@@ -7217,11 +7245,14 @@ async function fetchNotifications(){
     });
 
     // 2. Finance — overdue invoices
+    // FIX: real invoice columns are invoice_no / net_amount (HTTP 400); overdue = unpaid & past due
     const {data:inv} = await sb.from('invoices')
-      .select('id,invoice_number,vendor_name,amount,due_date,status')
-      .in('status',['pending','overdue'])
+      .select('*')
+      .not('status','in','(paid,cancelled)')
+      .lt('due_date', new Date().toISOString().split('T')[0])
       .order('due_date',{ascending:true})
       .limit(20);
+    (inv||[]).forEach(i=>{ i.invoice_number=i.invoice_no||i.invoice_number; i.vendor_name=i.vendor_name||i.client||i.invoice_type; i.amount=i.net_amount??i.amount; });
 
     (inv||[]).forEach(i=>{
       const due  = new Date(i.due_date);
@@ -7242,11 +7273,11 @@ async function fetchNotifications(){
     });
 
     // 3. Projects — RAG Red alerts
-    const {data:proj} = await sb.from('projects')
-      .select('id,name,cpi,spi')
-      .eq('status','active')
-      
-      .limit(15);
+    // FIX: 'active' is not a project status — use ACTIVE_STATUSES and only CPI/SPI < 0.90 (RAG red)
+    const {data:projAll} = await sb.from('projects')
+      .select('id,name,project_no,cpi,spi,status')
+      .in('status',ACTIVE_STATUSES);
+    const proj=(projAll||[]).filter(p=>Math.min(Number(p.cpi??1),Number(p.spi??1))<0.9).slice(0,15);
 
     (proj||[]).forEach(p=>{
       const cpi = Number(p.cpi||1).toFixed(2);
@@ -7266,9 +7297,10 @@ async function fetchNotifications(){
 
     // 4. Change Orders pending approval
     const {data:cos} = await sb.from('change_orders')
-      .select('id,co_number,project_id,status,amount,created_at')
+      .select('*')
       .eq('workflow_status','submitted')
       .limit(15);
+    (cos||[]).forEach(c=>{ c.co_number=c.co_no||c.co_number; c.amount=c.amount??c.cost_impact; });
 
     (cos||[]).forEach(c=>{
       notifs.push({
@@ -8368,7 +8400,7 @@ async function loadSystem(){
       sb.from('audit_log').select('id,table_name,action,created_at').order('created_at',{ascending:false}).limit(100),
       sb.from('workflow_items').select('id,status,entity_type').in('status',['pending','overdue']),
       sb.from('projects').select('id,status,cpi,pct').in('status',['planning','execution','monitoring','closeout']),
-      sb.from('material_items').select('id,current_qty,reorder_level').not('reorder_level','is',null),
+      sb.from('material_master').select('*').not('reorder_level','is',null),   // FIX: material_items does not exist; stock lives in material_master
       sb.from('user_profiles').select('id,role,is_active,last_sign_in_at')
     ]);
 
@@ -8383,7 +8415,7 @@ async function loadSystem(){
     const critErrs   = errs.filter(e=>e.severity==='critical').length;
     const overdueWF  = wfs.filter(w=>w.status==='overdue').length;
     const critCPI    = projs.filter(p=>Number(p.cpi)<0.9).length;
-    const lowStock   = items.filter(i=>Number(i.current_qty)<=Number(i.reorder_level)).length;
+    const lowStock   = items.filter(i=>Number(i.current_stock??i.current_qty??0)<=Number(i.reorder_level)).length;
     const activeUsers= users.filter(u=>u.is_active!==false).length;
 
     // Overall health score
@@ -10512,7 +10544,7 @@ async function _generateReportPDF(reportId){
   } else if(reportId==='qhse_summary'){
     const [{data:ncrs},{data:insp}]=await Promise.all([
       sb.from('ncrs').select('ncr_no,severity,status,department,created_at').order('created_at',{ascending:false}).limit(50),
-      sb.from('inspections').select('inspection_no,type,result,created_at').order('created_at',{ascending:false}).limit(20)
+      sb.from('hse_inspections').select('*').order('inspection_date',{ascending:false}).limit(20)   // FIX: table is hse_inspections
     ]);
     addHeader('QHSE SUMMARY REPORT', today);
     let y=45;
@@ -11793,7 +11825,7 @@ async function updateCloseoutItem(projectId, itemId, checked){
 async function signOffCloseout(projectId, projectNo){
   if(!confirm(`Sign off closeout for ${projectNo} and close the project?`)) return;
   const {data:existing}=await sb.from('project_closeout').select('*').eq('project_id',projectId).single();
-  await sb.from('project_closeout').upsert({project_id:projectId,checklist:existing?.checklist||{},signed_off:true,signed_by:currentProfile?.id,signed_at:new Date().toISOString()});
+  await sb.from('project_closeout').upsert({project_id:projectId,checklist:existing?.checklist||{},signed_off:true,signed_by:currentProfile?.id,signed_at:new Date().toISOString()},{onConflict:'project_id'});
   await sb.from('projects').update({status:'closeout',updated_at:new Date().toISOString()}).eq('id',projectId);
   await writeAudit('projects',projectId,'CLOSEOUT_SIGNED_OFF',{status:'execution'},{status:'closeout'},'Project closeout signed off');
   showToast(`${projectNo} closeout signed off ✓`);
@@ -13548,6 +13580,24 @@ function saveNotifSchedule(){
   runScheduledNotifications();
 }
 
+// Tables referenced by optional features that may not exist yet in this database.
+// A 404 (PGRST205 / relation missing) is remembered for 24h so the browser stops requesting it.
+const _MISSING_KEY='sp360_missing_tables';
+function _missingTables(){ try{ const o=JSON.parse(localStorage.getItem(_MISSING_KEY)||'{}'); const now=Date.now(); return Object.fromEntries(Object.entries(o).filter(([,t])=>now-t<864e5)); }catch(_){ return {}; } }
+function tableKnownMissing(t){ return !!_missingTables()[t]; }
+function noteMissingTable(t,err){
+  if(!err) return false;
+  const missing=err.code==='PGRST205'||err.code==='42P01'||/does not exist|Could not find the table/i.test(err.message||'');
+  if(missing){ try{ const o=_missingTables(); o[t]=Date.now(); localStorage.setItem(_MISSING_KEY,JSON.stringify(o)); }catch(_){} console.warn('[SP360] table missing in database:',t); }
+  return missing;
+}
+async function safeSelect(table, build){
+  if(tableKnownMissing(table)) return {data:[],error:null,skipped:true};
+  const r=await build(sb.from(table));
+  if(r.error && noteMissingTable(table,r.error)) return {data:[],error:null,skipped:true};
+  return r;
+}
+
 async function runScheduledNotifications(){
   const schedule=JSON.parse(localStorage.getItem('sp360_notif_schedule')||'{}');
   const enabled=Object.entries(schedule).filter(([,v])=>v?.enabled);
@@ -13562,13 +13612,13 @@ async function runScheduledNotifications(){
       const cutoff=new Date(today.getTime()+days*86400000).toISOString().split('T')[0];
 
       if(triggerId==='cert_expiry_30'){
-        const {data}=await sb.from('employee_certifications').select('*,employee:employees(full_name)').lte('expiry_date',cutoff).gte('expiry_date',today.toISOString().split('T')[0]).eq('status','active');
+        const {data}=await safeSelect('employee_certifications',q=>q.select('*,employee:employees(full_name)').lte('expiry_date',cutoff).gte('expiry_date',today.toISOString().split('T')[0]).eq('status','active'));
         if(data?.length>0){ showToast(`🏆 ${data.length} certification(s) expiring in ${days}d`); triggered++; }
       }
       if(triggerId==='insurance_exp_30'){
         const [{data:pols},{data:bonds}]=await Promise.all([
-          sb.from('insurance_policies').select('policy_no').lte('expiry_date',cutoff).gte('expiry_date',today.toISOString().split('T')[0]).eq('status','active'),
-          sb.from('performance_bonds').select('bond_no').lte('expiry_date',cutoff).gte('expiry_date',today.toISOString().split('T')[0]).eq('status','active')
+          safeSelect('insurance_policies',q=>q.select('policy_no').lte('expiry_date',cutoff).gte('expiry_date',today.toISOString().split('T')[0]).eq('status','active')),
+          safeSelect('performance_bonds',q=>q.select('bond_no').lte('expiry_date',cutoff).gte('expiry_date',today.toISOString().split('T')[0]).eq('status','active'))
         ]);
         const cnt=(pols?.length||0)+(bonds?.length||0);
         if(cnt>0){ showToast(`🛡 ${cnt} insurance/bond(s) expiring in ${days}d`); triggered++; }
@@ -13578,11 +13628,11 @@ async function runScheduledNotifications(){
         if(data?.length>0){ showToast(`💰 ${data.length} AR invoice(s) overdue`); triggered++; }
       }
       if(triggerId==='tender_deadline'){
-        const {data}=await sb.from('tenders').select('tender_no').lte('submission_deadline',cutoff).gte('submission_deadline',today.toISOString().split('T')[0]).eq('status','open');
+        const {data}=await safeSelect('tenders',q=>q.select('tender_no').lte('submission_deadline',cutoff).gte('submission_deadline',today.toISOString().split('T')[0]).eq('status','open'));
         if(data?.length>0){ showToast(`📋 ${data.length} tender deadline(s) in ${days}d`); triggered++; }
       }
       if(triggerId==='maintenance_due'){
-        const {data}=await sb.from('asset_maintenance').select('id').lte('scheduled_date',cutoff).gte('scheduled_date',today.toISOString().split('T')[0]).eq('status','scheduled');
+        const {data}=await safeSelect('asset_maintenance',q=>q.select('id').lte('scheduled_date',cutoff).gte('scheduled_date',today.toISOString().split('T')[0]).eq('status','scheduled'));
         if(data?.length>0){ showToast(`🔧 ${data.length} maintenance task(s) due in ${days}d`); triggered++; }
       }
       if(triggerId==='weekly_evm_auto'){
