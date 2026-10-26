@@ -1,4 +1,4 @@
-/* SP360 Integrated Platform — application script (v4.1.4)
+/* SP360 Integrated Platform — application script (v4.2.0)
  * Loaded by index.html as <script src="app.js">. Must stay a classic (non-module) script:
  * top-level functions/lets are shared globals used by the data-h-* event delegation registry. */
 // ═══════════════════════════════════════════════════════════
@@ -288,7 +288,7 @@ function showToast(msg,type='success'){
     b.id='sp360-offline'; b.setAttribute('role','status');
     b.textContent='⚠️ You are offline — changes cannot be saved until the connection is restored.';
     b.style.cssText='position:fixed;top:0;left:0;right:0;z-index:10000;background:#EF4444;color:#fff;'+
-      'font:600 12px/1.4 inherit;text-align:center;padding:6px 12px;box-shadow:0 2px 8px #0006';
+      'font-family:inherit;font-size:12px;font-weight:600;line-height:1.4;text-align:center;padding:6px 12px;box-shadow:0 2px 8px #0006';
     document.body.appendChild(b);
   };
   const hide=()=>{ const b=document.getElementById('sp360-offline'); if(b){ b.remove(); showToast('✅ Back online'); } };
@@ -579,6 +579,9 @@ function enterApp(){
     btn.style.display = allowed.includes(pageId) ? '' : 'none';
   });
 
+  // ── Grouped, collapsible sidebar + Ctrl+K page search ─────
+  initNavGroups();
+
   // ── Apply role badge color in sidebar ─────────────────────
   const roleEl = document.getElementById('user-role');
   if(roleEl){
@@ -864,7 +867,9 @@ function navTo(id,btn){
     if(side?.classList.contains('mob-open')) toggleSide();
   }
   document.querySelectorAll('.nav-btn').forEach(b=>b.classList.remove('active'));
+  if(!btn) btn=document.getElementById('nav-'+id);
   if(btn)btn.classList.add('active');
+  if(typeof navGroupReveal==='function') navGroupReveal(id);
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('active'));
   const pg=document.getElementById('page-'+id);
   if(pg)pg.classList.add('active');
@@ -6908,13 +6913,146 @@ async function exportCEOPDF(){
   showToast('CEO PDF exported ✓');
 }
 
+// ══════════════════════════════════════════════════════════════
+//  SIDEBAR NAVIGATION — grouped accordion + Ctrl+K quick search
+//  Groups follow how the business works; one group open at a time;
+//  the group of the current page opens automatically; empty groups
+//  (no page allowed for the role) are hidden. CSP-safe: listeners only.
+// ══════════════════════════════════════════════════════════════
+const NAV_GROUPS=[
+  {key:'executive',label:'Executive',      pages:['dashboard','ceo','analytics','forecast','benchmark','weekly']},
+  {key:'crm',      label:'CRM & BD',       pages:['crm-customers','crm-leads','crm-opportunities','crm-pipeline','crm-quotations','crm-activities','bizdev','tender']},
+  {key:'projects', label:'Projects',       pages:['projects','gantt','resources','scorecard','budget','meetings','lessons','templates']},
+  {key:'site',     label:'Site & Contracts',pages:['contracts','subcon','sitediary','punchlist','retention','correspondence']},
+  {key:'finance',  label:'Finance',        pages:['finance','ratios','expenses','insurance']},
+  {key:'supply',   label:'Supply Chain',   pages:['procurement','inventory','assets']},
+  {key:'hr',       label:'HR',             pages:['hr','timetracking','training','appraisal']},
+  {key:'quality',  label:'Quality',        pages:['qhse','documents']},
+  {key:'admin',    label:'Admin',          pages:['workflow','users','audit','sla','reports','import','bulk','ai','system']}
+];
+// Arabic / alternate search words per page (Ctrl+K)
+const NAV_ALIASES={
+  dashboard:'لوحة رئيسية home',ceo:'المدير التنفيذي تقرير ceo flash',analytics:'تحليلات',forecast:'توقعات eac',benchmark:'مقارنة',weekly:'تقرير اسبوعي',
+  'crm-customers':'عملاء clients','crm-leads':'عملاء محتملين','crm-opportunities':'فرص','crm-pipeline':'مسار المبيعات','crm-quotations':'عروض اسعار quote','crm-activities':'انشطة مكالمات',
+  bizdev:'تطوير اعمال',tender:'مناقصات عطاءات',projects:'مشاريع evm',gantt:'جدول زمني schedule',resources:'موارد',scorecard:'مؤشرات kpi',budget:'ميزانية',
+  meetings:'اجتماعات محاضر',lessons:'دروس مستفادة',templates:'قوالب',contracts:'عقود',subcon:'مقاولين باطن subcontractors',sitediary:'يومية الموقع',punchlist:'ملاحظات تسليم',
+  retention:'محتجزات استقطاع',correspondence:'مراسلات خطابات',finance:'مالية فواتير invoices',ratios:'نسب مالية',expenses:'مصروفات',insurance:'تامين كفالات bonds',
+  procurement:'مشتريات اوامر شراء po rfq',inventory:'مخزون مخازن',assets:'اصول معدات',hr:'موارد بشرية موظفين',timetracking:'ساعات عمل حضور',training:'تدريب شهادات',
+  appraisal:'تقييم اداء',qhse:'جودة سلامة ncr',documents:'مستندات وثائق',workflow:'موافقات اعتماد approvals',users:'مستخدمين صلاحيات',audit:'تدقيق سجل',
+  sla:'مستوى خدمة',reports:'تقارير',import:'استيراد تصدير',bulk:'عمليات جماعية',ai:'ذكاء اصطناعي مساعد',system:'نظام health'
+};
+const _NAV_OPEN_KEY='sp360_nav_open';
+function _navGroupOf(pageId){ return NAV_GROUPS.find(g=>g.pages.includes(pageId))?.key||null; }
+function _navOpen(key, toggle){
+  const groups=[...document.querySelectorAll('aside nav .nav-group')];
+  const target=groups.find(g=>g.dataset.group===key); if(!target) return;
+  const willOpen=toggle ? !target.classList.contains('open') : true;   // header click toggles; navigation always opens
+  groups.forEach(g=>{
+    const on=(g===target)&&willOpen;
+    g.classList.toggle('open',on);
+    g.querySelector('.nav-group-head')?.setAttribute('aria-expanded',on?'true':'false');
+  });
+  if(toggle){ try{ localStorage.setItem(_NAV_OPEN_KEY, willOpen?key:''); }catch(_){} }
+}
+function navGroupReveal(pageId){
+  const key=_navGroupOf(pageId); if(!key) return;
+  document.querySelectorAll('aside nav .nav-group').forEach(g=>g.classList.toggle('has-active',g.dataset.group===key));
+  const g=document.querySelector(`aside nav .nav-group[data-group="${key}"]`);
+  if(g && !g.classList.contains('open')) _navOpen(key,false);
+}
+function initNavGroups(){
+  const nav=document.querySelector('aside nav'); if(!nav) return;
+  if(!nav.dataset.grouped){
+    nav.querySelectorAll('.nav-section').forEach(x=>x.remove());
+    const frag=document.createDocumentFragment();
+    // search button
+    const sb_=document.createElement('button');
+    sb_.type='button'; sb_.className='nav-search'; sb_.innerHTML='<span>🔍</span><span>Search pages</span><kbd>Ctrl K</kbd>';
+    sb_.addEventListener('click',openNavPalette); frag.appendChild(sb_);
+    NAV_GROUPS.forEach(gr=>{
+      const g=document.createElement('div'); g.className='nav-group'; g.dataset.group=gr.key;
+      const h=document.createElement('button'); h.type='button'; h.className='nav-group-head'; h.setAttribute('aria-expanded','false');
+      h.innerHTML=`<span class="ng-chev">▶</span><span>${esc(gr.label)}</span><span class="ng-count"></span>`;
+      h.addEventListener('click',()=>_navOpen(gr.key,true));
+      const items=document.createElement('div'); items.className='nav-group-items';
+      gr.pages.forEach(pid=>{ const b=document.getElementById('nav-'+pid); if(b) items.appendChild(b); });
+      g.append(h,items); frag.appendChild(g);
+    });
+    // anything not mapped stays reachable under Admin
+    const adminItems=frag.querySelector('[data-group="admin"] .nav-group-items');
+    nav.querySelectorAll(':scope > .nav-btn').forEach(b=>adminItems.appendChild(b));
+    nav.innerHTML=''; nav.appendChild(frag); nav.dataset.grouped='1';
+  }
+  // role filtering: hide empty groups, show counts
+  nav.querySelectorAll('.nav-group').forEach(g=>{
+    const vis=[...g.querySelectorAll('.nav-btn')].filter(b=>b.style.display!=='none').length;
+    g.classList.toggle('ng-hidden',vis===0);
+    g.querySelector('.ng-count').textContent=vis||'';
+  });
+  let saved=''; try{ saved=localStorage.getItem(_NAV_OPEN_KEY)||''; }catch(_){}
+  const activeId=(document.querySelector('.nav-btn.active')?.id||'nav-dashboard').slice(4);
+  const start=_navGroupOf(activeId)||saved||'executive';
+  document.querySelectorAll('aside nav .nav-group').forEach(g=>{ const on=g.dataset.group===start; g.classList.toggle('open',on); g.querySelector('.nav-group-head').setAttribute('aria-expanded',on?'true':'false'); });
+  navGroupReveal(activeId);
+}
+
+// ── Ctrl+K page search ──
+let _npSel=0,_npItems=[];
+function _npBuild(){
+  let el=document.getElementById('nav-palette'); if(el) return el;
+  el=document.createElement('div'); el.id='nav-palette'; el.setAttribute('role','dialog'); el.setAttribute('aria-label','Search pages');
+  el.innerHTML='<div class="np-box"><input id="np-input" type="text" placeholder="Search pages…  (English or عربي)" autocomplete="off" aria-label="Search pages"><ul id="np-list" role="listbox"></ul></div>';
+  document.body.appendChild(el);
+  el.addEventListener('click',e=>{ if(e.target===el) closeNavPalette(); });
+  const inp=el.querySelector('#np-input');
+  inp.addEventListener('input',()=>{ _npSel=0; _npRender(inp.value); });
+  inp.addEventListener('keydown',e=>{
+    if(e.key==='ArrowDown'){ e.preventDefault(); _npSel=Math.min(_npSel+1,_npItems.length-1); _npRender(inp.value,true); }
+    else if(e.key==='ArrowUp'){ e.preventDefault(); _npSel=Math.max(_npSel-1,0); _npRender(inp.value,true); }
+    else if(e.key==='Enter'){ e.preventDefault(); e.stopPropagation(); _npGo(_npItems[_npSel]); }
+    else if(e.key==='Escape'){ e.preventDefault(); e.stopPropagation(); closeNavPalette(); }
+  });
+  el.querySelector('#np-list').addEventListener('click',e=>{ const li=e.target.closest('li[data-i]'); if(li) _npGo(_npItems[+li.dataset.i]); });
+  return el;
+}
+function _npAll(){
+  const out=[];
+  NAV_GROUPS.forEach(g=>g.pages.forEach(pid=>{
+    const b=document.getElementById('nav-'+pid);
+    if(!b||b.style.display==='none') return;
+    const label=[...b.childNodes].filter(n=>n.nodeType===3).map(n=>n.textContent).join('').trim();
+    out.push({pid,btn:b,group:g.label,label,icon:b.querySelector('.nav-icon')?.textContent||''});
+  }));
+  return out;
+}
+function _npRender(q,keepScroll){
+  const list=document.getElementById('np-list'); const t=(q||'').trim().toLowerCase();
+  const all=_npAll();
+  _npItems=!t?all:all.filter(x=>(x.label+' '+x.group+' '+x.pid+' '+(NAV_ALIASES[x.pid]||'')).toLowerCase().includes(t))
+    .sort((a,b)=>(b.label.toLowerCase().startsWith(t))-(a.label.toLowerCase().startsWith(t)));
+  if(!_npItems.length){ list.innerHTML='<div class="np-empty">No page matches “'+esc(q)+'”</div>'; return; }
+  list.innerHTML=_npItems.map((x,i)=>`<li role="option" data-i="${i}" class="${i===_npSel?'sel':''}" aria-selected="${i===_npSel}"><span>${esc(x.icon)}</span><span>${esc(x.label)}</span><span class="np-grp">${esc(x.group)}</span></li>`).join('');
+  if(keepScroll) list.querySelector('li.sel')?.scrollIntoView({block:'nearest'});
+}
+function _npGo(x){ if(!x) return; closeNavPalette(); x.btn.click(); }
+function openNavPalette(){
+  if(!window._rbacReady) return;
+  const el=_npBuild(); _npSel=0; el.classList.add('open');
+  const inp=el.querySelector('#np-input'); inp.value=''; _npRender('');
+  inp.focus();
+}
+function closeNavPalette(){ document.getElementById('nav-palette')?.classList.remove('open'); }
+document.addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey) && (e.key==='k'||e.key==='K')){ e.preventDefault(); const el=document.getElementById('nav-palette'); el?.classList.contains('open')?closeNavPalette():openNavPalette(); }
+});
+
 // ── ABOUT & CHANGELOG ────────────────────────────────────────
 function openAboutModal(){
-  openModal('SP360 v4.1 — About & Changelog',`
+  openModal('SP360 v4.2 — About & Changelog',`
   <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;padding:12px 14px;background:#1E3A5F18;border-radius:8px">
     <div style="width:48px;height:48px;background:var(--gold);border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:900;color:#0D1B2A;font-size:20px;flex-shrink:0">SP</div>
     <div>
-      <div style="font-size:16px;font-weight:800;color:var(--gold)">SP360 v4.1</div>
+      <div style="font-size:16px;font-weight:800;color:var(--gold)">SP360 v4.2</div>
       <div style="font-size:11px;color:var(--muted)">Smart Projects 360 · Kuwait · Production System</div>
       <div style="font-size:10px;color:var(--faint);margin-top:2px">Supabase · GitHub Pages · PWA · index.html + app.js (strict CSP)</div>
     </div>
@@ -6923,6 +7061,7 @@ function openAboutModal(){
   <div style="margin-bottom:14px">
     <div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">📋 Changelog</div>
     ${[
+      ['v4.2','Navigation','Sidebar regrouped into 9 business areas · collapsible groups (one open, current page auto-opens, empty groups hidden per role) · Ctrl+K page search (English / عربي)','#3B82F6'],
       ['v4.1','Security & Data Integrity','MFA enforced on every entry path (fail-closed, aal2 in RLS) · XSS escaping across all screens · strict CSP (no inline scripts/handlers, SRI on CDN libs) · server-side RLS & role gates · atomic numbering (yearly formats kept) · atomic Lead→Opp→Contract→Project conversions · duplicate-customer guard · DB audit trail (before/after) · 28 missing tables created · offline banner · structured Health Check','#C9A84C'],
       ['v4.0','CRM Module','Customers · Leads · Opportunities · Pipeline · Quotations · Activities · Customer 360 · CRM → Contract → Project','#10B981'],
       ['v2.5','Phase 12 — Atomic Operations Complete','saveProject/savePO/saveVendor → Atomic RPCs · saveOpp audit entity_id fixed · CSP header added · PO-specific 3-Way Match (invoice↔PO↔MRV) · po_id linked on invoice insert · Invoice audit strict mode · SPI HTML rendering fix (2 <td> template literals) · convertToProject MAX+1 → next_ref_no() atomic RPC · CO Audit entity_id=null fixed (INSERT .select().single()) · CO dual-state unified (status=draft / workflow_status=submitted) · Version bumped to v2.3','#10B981'],
@@ -6953,7 +7092,7 @@ function openAboutModal(){
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
     ${[
-      ['Version','v4.1 (Security & Data Integrity)'],
+      ['Version','v4.2 (Navigation · Security & Data Integrity)'],
       ['Database','Supabase (PostgreSQL)'],
       ['Schema','Verify with sp360_schema_check.sql'],
       ['Security','MFA (aal2) + RLS + role gates + DB audit'],

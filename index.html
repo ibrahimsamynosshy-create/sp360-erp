@@ -21,7 +21,7 @@
 <link rel="manifest" href="manifest.json"/>
 <!-- Icons -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231E3A5F'/><text x='16' y='23' font-family='Arial' font-weight='900' font-size='14' fill='%23C9A84C' text-anchor='middle'>SP</text></svg>"/>
-<script src="supabase.min.js?v=4.1.4"></script>
+<script src="supabase.min.js?v=4.2.0"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -74,6 +74,30 @@ aside.collapsed{width:0}
 #notif-list .notif-item:hover{background:var(--n4)!important}
 @media(max-width:480px){#notif-drawer{width:100vw!important}}
 nav{padding:10px 7px;flex:1;overflow-y:auto}
+.nav-search{display:flex;align-items:center;gap:8px;width:100%;margin:0 0 6px;padding:7px 10px;border:1px solid var(--bdr);border-radius:7px;background:var(--n3,#0D1B2A);color:var(--muted);font:inherit;font-size:11px;cursor:pointer;text-align:left}
+.nav-search:hover{border-color:var(--gold);color:var(--text)}
+.nav-search kbd{margin-left:auto;font:600 9px/1 monospace;color:var(--faint);border:1px solid var(--bdr);border-radius:4px;padding:2px 4px}
+.nav-group{margin-bottom:2px}
+.nav-group-head{display:flex;align-items:center;gap:6px;width:100%;padding:8px 10px;border:none;background:none;cursor:pointer;color:var(--faint);font-family:inherit;font-size:9.5px;font-weight:700;line-height:1.2;letter-spacing:1px;text-transform:uppercase;border-radius:6px;text-align:left;white-space:nowrap}
+.nav-group-head:hover{color:var(--text);background:var(--n4)}
+.nav-group-head:focus-visible{outline:2px solid var(--gold);outline-offset:-2px}
+.nav-group-head .ng-count{margin-left:auto;font-size:9px;font-weight:600;color:var(--faint);letter-spacing:0}
+.nav-group-head .ng-chev{font-size:9px;transition:transform .15s;color:var(--faint)}
+.nav-group.open .ng-chev{transform:rotate(90deg)}
+.nav-group.has-active .nav-group-head{color:var(--gold)}
+.nav-group-items{display:none;padding:2px 0 6px}
+.nav-group.open .nav-group-items{display:block}
+.nav-group.ng-hidden{display:none}
+#nav-palette{position:fixed;inset:0;z-index:1200;background:#00000088;display:none;align-items:flex-start;justify-content:center;padding-top:12vh}
+#nav-palette.open{display:flex}
+#nav-palette .np-box{width:min(520px,92vw);background:var(--n2);border:1px solid var(--gold);border-radius:12px;box-shadow:0 20px 50px #000a;overflow:hidden}
+#nav-palette input{width:100%;padding:14px 16px;border:none;border-bottom:1px solid var(--bdr);background:transparent;color:var(--text);font:inherit;font-size:14px;outline:none}
+#nav-palette ul{list-style:none;margin:0;padding:6px;max-height:50vh;overflow-y:auto}
+#nav-palette li{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:7px;cursor:pointer;color:var(--muted);font-size:12px}
+#nav-palette li .np-grp{margin-left:auto;font-size:9px;text-transform:uppercase;letter-spacing:.8px;color:var(--faint)}
+#nav-palette li.sel{background:#C9A84C1F;color:var(--gold)}
+#nav-palette .np-empty{padding:16px;color:var(--faint);font-size:12px;text-align:center}
+@media(max-width:900px) and (min-width:601px){.nav-group-head,.nav-search{display:none}.nav-group-items{display:block!important}}
 .nav-section{color:var(--faint);font-size:9px;font-weight:700;letter-spacing:1px;text-transform:uppercase;padding:12px 10px 5px}
 /* RBAC: removed forced display:flex!important on CRM/P13 nav buttons — it overrode role-based hiding in enterApp() */
 .nav-btn{width:100%;display:flex;align-items:center;gap:9px;padding:8px 10px;border-radius:7px;border:none;cursor:pointer;background:none;color:var(--muted);font-size:12px;text-align:left;font-family:inherit;border-left:3px solid transparent;margin-bottom:1px;white-space:nowrap;overflow:hidden;transition:all .1s}
@@ -525,7 +549,7 @@ img,canvas,svg{max-width:100%;height:auto}
     <button data-h-click="h2" style="background:none;border:none;color:var(--muted);font-size:18px;cursor:pointer;padding:4px 6px;border-radius:5px">☰</button>
     <div class="logo-sq">SP</div>
     <div class="logo-txt"><div class="t1">SP360 ERP</div><div class="t2">Smart Projects 360 · Kuwait</div></div>
-    <span data-h-click="h3" style="font-size:9px;color:var(--gold);background:#C9A84C18;border:1px solid #C9A84C33;border-radius:4px;padding:2px 6px;font-weight:700;cursor:pointer;flex-shrink:0;white-space:nowrap">v4.1</span>
+    <span data-h-click="h3" style="font-size:9px;color:var(--gold);background:#C9A84C18;border:1px solid #C9A84C33;border-radius:4px;padding:2px 6px;font-weight:700;cursor:pointer;flex-shrink:0;white-space:nowrap">v4.2</span>
     <span id="mfa-btn" data-h-click="h4" style="display:none;font-size:9px;color:#10B981;background:#10B98118;border:1px solid #10B98133;border-radius:4px;padding:2px 6px;font-weight:700;cursor:pointer;flex-shrink:0;white-space:nowrap">🔐 MFA</span>
     <button id="notif-bell" data-h-click="h5" style="position:relative;background:none;border:1px solid transparent;border-radius:8px;padding:5px 8px;cursor:pointer;display:flex;align-items:center;gap:5px;color:var(--muted);font-size:13px;transition:all .15s" title="Notifications">
       🔔
@@ -554,7 +578,7 @@ img,canvas,svg{max-width:100%;height:auto}
     <aside id="sidebar">
       <nav>
         <div class="nav-section">Executive</div>
-        <button class="nav-btn active" data-h-click="h10"><span class="nav-icon">📊</span>Dashboard</button>
+        <button class="nav-btn active" id="nav-dashboard" data-h-click="h10"><span class="nav-icon">📊</span>Dashboard</button>
         <div class="nav-section">CRM</div>
         <button class="nav-btn" id="nav-crm-customers" data-h-click="h11"><span class="nav-icon">🏢</span>Customers</button>
         <button class="nav-btn" id="nav-crm-leads" data-h-click="h12"><span class="nav-icon">💡</span>Leads<span class="nav-badge" id="leads-badge" style="display:none">0</span></button>
@@ -610,7 +634,7 @@ img,canvas,svg{max-width:100%;height:auto}
         <button class="nav-btn" id="nav-templates" data-h-click="h58"><span class="nav-icon">📄</span>Templates</button>
         <button class="nav-btn" id="nav-system" data-h-click="h59"><span class="nav-icon">⚙️</span>System</button>
       </nav>
-      <div class="sidebar-foot" style="cursor:pointer" data-h-click="h3" title="About & Changelog">SP360 v4.1 · ERP + CRM + PMC<br><span style="color:var(--gold);font-size:9px">ℹ What's new?</span></div>
+      <div class="sidebar-foot" style="cursor:pointer" data-h-click="h3" title="About & Changelog">SP360 v4.2 · ERP + CRM + PMC<br><span style="color:var(--gold);font-size:9px">ℹ What's new?</span></div>
     </aside>
 
     <main>
@@ -758,6 +782,6 @@ img,canvas,svg{max-width:100%;height:auto}
   </div>
 </div>
 
-<script src="app.js?v=4.1.4"></script>
+<script src="app.js?v=4.2.0"></script>
 </body>
 </html>
