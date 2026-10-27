@@ -21,7 +21,7 @@
 <link rel="manifest" href="manifest.json"/>
 <!-- Icons -->
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231E3A5F'/><text x='16' y='23' font-family='Arial' font-weight='900' font-size='14' fill='%23C9A84C' text-anchor='middle'>SP</text></svg>"/>
-<script src="supabase.min.js?v=4.2.0"></script>
+<script src="supabase.min.js?v=4.2.1"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 :root{
@@ -511,14 +511,25 @@ img,canvas,svg{max-width:100%;height:auto}
 <body>
 
 <!-- LOADING SCREEN — shown while session check runs -->
-<div id="app-loading" style="position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;gap:14px">
+<div id="app-loading" style="position:fixed;inset:0;background:var(--n1);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;gap:14px">
   <div style="width:44px;height:44px;background:#1E3A5F;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:900;color:#C9A84C">SP</div>
   <div style="font-size:12px;color:var(--muted)">Loading SP360 ERP…</div>
   <div style="width:120px;height:3px;background:var(--bdr);border-radius:2px;overflow:hidden">
     <div style="height:100%;background:var(--gold);border-radius:2px;animation:ldbar 1.4s ease-in-out infinite"></div>
   </div>
+  <!-- Shown by CSS only if the app has not started after 12 s (e.g. app.js / supabase.min.js failed to load).
+       app.js hides #app-loading as soon as it starts, so a healthy load never shows this. -->
+  <div id="ld-slow" role="alert" style="max-width:360px;text-align:center;font-size:12px;line-height:1.6;color:var(--muted);padding:10px 14px;border:1px solid var(--bdr);border-radius:8px">
+    <b style="color:var(--gold)">SP360 is taking longer than expected.</b><br>
+    Check your internet connection, then press <b>Ctrl+F5</b>.<br>
+    If you opened the file from your computer, keep <b>index.html</b>, <b>app.js</b> and <b>supabase.min.js</b> in the same folder.
+  </div>
+  <noscript><div style="font-size:12px;color:#EF4444">JavaScript is disabled — SP360 needs JavaScript to run.</div></noscript>
 </div>
-<style>@keyframes ldbar{0%{width:0;margin-left:0}50%{width:60%;margin-left:20%}100%{width:0;margin-left:120px}}</style>
+<style>@keyframes ldbar{0%{width:0;margin-left:0}50%{width:60%;margin-left:20%}100%{width:0;margin-left:120px}}
+#ld-slow{opacity:0;visibility:hidden;animation:ldshow .4s ease-out 12s forwards}
+@keyframes ldshow{to{opacity:1;visibility:visible}}
+@media (prefers-reduced-motion:reduce){#ld-slow{animation-duration:.01s}}</style>
 
 <!-- AUTH SCREEN -->
 <div id="auth-screen" style="display:none">
@@ -782,6 +793,6 @@ img,canvas,svg{max-width:100%;height:auto}
   </div>
 </div>
 
-<script src="app.js?v=4.2.0"></script>
+<script src="app.js?v=4.2.1"></script>
 </body>
 </html>
