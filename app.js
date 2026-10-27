@@ -1,4 +1,5 @@
-/* SP360 Integrated Platform — application script (v4.2.0)
+/* SP360 Integrated Platform — application script (v4.3.0)
+ * v4.3.0 — P14 AI Project Health Review (module appended at end of file; wraps loadAI/loadDashboard/loadCEO)
  * Loaded by index.html as <script src="app.js">. Must stay a classic (non-module) script:
  * top-level functions/lets are shared globals used by the data-h-* event delegation registry. */
 // ═══════════════════════════════════════════════════════════
@@ -6898,6 +6899,10 @@ async function exportCEOPDF(){
     doc.setTextColor(...col); doc.setFontSize(8); doc.setFont('helvetica','bold');
     doc.text(String(val),fx+22,finY+14,{align:'center'}); fx+=47;
   });
+
+  // P14 · AI Health Review page (approved insights only; skipped silently if none)
+  try{ if(typeof aiAppendCEOPdfPage==='function') await aiAppendCEOPdfPage(doc,{navy,gold,white,green,red,amber,lgray}); }
+  catch(e){ console.warn('[AI] PDF section skipped:', e?.message||e); }
 
   // Footers
   const pageCount=doc.internal.getNumberOfPages();
@@ -19652,3 +19657,535 @@ const __H = {
   };
   TYPES.forEach(t=>document.addEventListener(t,ev=>run(t,ev)));
 })();
+
+// ══════════════════════════════════════════════════════════════
+//  P14 · AI PROJECT HEALTH REVIEW  (v4.3.0)
+//  Edge Function: ai-health-analyst · Tables: ai_runs, ai_insights
+//  Principle: RAG = company policy (SQL) · AI explains · Human approves
+//  Integration (no edits to existing loaders — wrapped at the end):
+//    • page 'ai'      → tabs: 🩺 Health Review (new) | 💬 Assistant (existing)
+//    • Dashboard      → AI Health card under the page header
+//    • CEO Report     → approved AI section (screen + print) + PDF page
+//  All AI text is rendered through esc() — never trusted as HTML.
+// ══════════════════════════════════════════════════════════════
+const AIH = {
+  fn: 'ai-health-analyst',
+  tab: 'health',            // 'health' | 'assistant'
+  sub: 'queue',             // 'queue' | 'approved' | 'history'
+  canReview: null,          // cached result of fn_ai_can_review()
+  running: false,
+  progress: '',
+  cols: [
+    'id','run_id','scope','project_id','status','rag','trend','confidence',
+    'headline','summary','root_causes','forecast','recommended_actions','data_quality_flags',
+    'reviewer_notes','reviewed_at','created_at',
+    'computed:input_snapshot->computed',
+    'project_no:input_snapshot->project->>project_no',
+    'project_name:input_snapshot->project->>name',
+    'department:input_snapshot->project->>department',
+    'pf:input_snapshot->portfolio'
+  ].join(',')
+};
+const AIH_RAG = {
+  red:   {c:'#EF4444', i:'🔴', l:'RED'},
+  amber: {c:'#F97316', i:'🟡', l:'AMBER'},
+  green: {c:'#10B981', i:'🟢', l:'GREEN'}
+};
+const AIH_TREND = {improving:'↗ Improving', stable:'→ Stable', deteriorating:'↘ Deteriorating'};
+const AIH_PRIO  = {high:'#EF4444', medium:'#F97316', low:'#94A3B8'};
+const aihRagOrder = r => ({red:0, amber:1, green:2}[r] ?? 3);
+const aihHasAIFlag = i => (i.data_quality_flags||[]).some(f => /^AI_/.test(String(f)));
+const aihNum = (v, d=2) => (v===null || v===undefined || v==='' || isNaN(Number(v))) ? '—' : Number(v).toFixed(d);
+const aihDate = d => d ? new Date(d).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
+const aihPill = (txt, c) => `<span style="display:inline-block;border-radius:10px;padding:2px 9px;font-size:9px;font-weight:800;letter-spacing:.3px;background:${c}1F;color:${c};border:1px solid ${c}55">${esc(txt)}</span>`;
+const aihSortInsights = list => [...list].sort((a,b) =>
+  (a.scope==='portfolio' ? -1 : b.scope==='portfolio' ? 1 : 0) ||
+  aihRagOrder(a.rag) - aihRagOrder(b.rag) ||
+  String(a.project_no||'').localeCompare(String(b.project_no||'')));
+
+// ── Server calls ─────────────────────────────────────────────
+async function aihCanReview(){
+  if(AIH.canReview !== null) return AIH.canReview;
+  try{
+    const {data, error} = await sb.rpc('fn_ai_can_review');
+    AIH.canReview = !error && data === true;
+  }catch(e){ AIH.canReview = false; }
+  return AIH.canReview;
+}
+
+async function aihInvoke(body){
+  const r = await sb.functions.invoke(AIH.fn, {body});
+  if(r.error){
+    let d; try{ d = await r.error.context.json(); }catch(_){ d = {ok:false, error:r.error.message}; }
+    return d || {ok:false, error:'Unknown error'};
+  }
+  return r.data;
+}
+
+async function aihFetch(status){
+  const {data, error} = await sb.from('ai_insights').select(AIH.cols).eq('status', status);
+  if(error) throw error;
+  return aihSortInsights(data||[]);
+}
+
+// ── Run (analyze → continue loop, resumable) ─────────────────
+async function aihRun(mode){
+  if(AIH.running) return;
+  const lang = document.getElementById('aih-lang')?.value || 'en';
+  AIH.running = true; AIH.progress = 'Starting…'; aihRenderRunBar();
+  try{
+    let d = mode === 'resume'
+      ? await aihInvoke({mode:'continue'})
+      : await aihInvoke({mode:'analyze', language:lang});
+    if(d && d.ok === false && d.run_id && /in progress/i.test(d.error||'')){
+      d = await aihInvoke({mode:'continue', run_id:d.run_id});
+    }
+    let guard = 0;
+    while(d && d.ok !== false && d.status === 'running' && guard++ < 25){
+      AIH.progress = d.progress || ''; aihRenderRunBar();
+      d = await aihInvoke({mode:'continue', run_id:d.run_id});
+    }
+    if(!d || d.ok === false) throw new Error(d?.error || 'Analysis failed');
+    AIH.progress = d.progress || '';
+    showToast(`🤖 AI analysis complete — ${d.progress || ''}`, 'success');
+    AIH.sub = 'queue';
+  }catch(e){
+    showToast('AI analysis: ' + e.message, 'error');
+    if(typeof logError === 'function') logError('AI', 'health_run', e);
+  }finally{
+    AIH.running = false; AIH.progress = '';
+    if(document.getElementById('aih-root')) aihRenderHealth();
+  }
+}
+
+function aihRenderRunBar(){
+  const bar = document.getElementById('aih-runbar');
+  if(!bar) return;
+  if(!AIH.running){ bar.innerHTML = ''; return; }
+  const m = /(\d+)\s*\/\s*(\d+)/.exec(AIH.progress||'');
+  const pct = m ? Math.round(100 * Number(m[1]) / Math.max(1, Number(m[2]))) : 5;
+  bar.innerHTML = `
+    <div class="card" style="margin-bottom:12px;border-color:var(--gold)">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:10px;flex-wrap:wrap">
+        <div style="font-size:11px;font-weight:700;color:var(--gold)">🤖 Analyzing portfolio… ${esc(AIH.progress||'')}</div>
+        <div style="font-size:9px;color:var(--muted)">Runs in batches (free-tier limits) · you can switch pages; results are saved as they arrive</div>
+      </div>
+      <div style="height:6px;border-radius:3px;background:var(--n3);overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:var(--gold);transition:width .4s"></div>
+      </div>
+    </div>`;
+}
+
+// ── Review actions ───────────────────────────────────────────
+async function aihReview(id, decision, notes){
+  const {error} = await sb.rpc('review_ai_insight', {p_insight_id:id, p_decision:decision, p_notes:notes||null});
+  if(error){ showToast('Review failed: ' + error.message, 'error'); return false; }
+  return true;
+}
+async function aihApprove(id){
+  if(await aihReview(id, 'approved')){ showToast('✓ Insight approved — now visible in CEO Report'); aihRenderHealth(); }
+}
+function aihRejectModal(id){
+  openModal('Reject AI insight', `
+    <div style="font-size:11px;color:var(--muted);margin-bottom:8px">Explain what is wrong — this feeds prompt improvement and is kept in the audit trail.</div>
+    <textarea id="aih-rej-notes" rows="4" style="width:100%;background:var(--n3);border:1px solid var(--bdr);border-radius:8px;padding:10px;color:var(--text);font-size:12px;font-family:inherit" placeholder="e.g. Headline says over budget but CPI = 1.00"></textarea>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px">
+      <button class="btn btn-ghost btn-sm" data-h-click="hai_close">Cancel</button>
+      <button class="btn btn-danger btn-sm" data-h-click="hai_rejectConfirm" data-ha-click="${esc(JSON.stringify([String(id)]))}">Reject</button>
+    </div>`);
+}
+async function aihRejectConfirm(id){
+  const notes = (document.getElementById('aih-rej-notes')?.value || '').trim();
+  if(notes.length < 5){ showToast('Please enter a reason (min 5 characters)', 'error'); return; }
+  if(await aihReview(id, 'rejected', notes)){ closeModal(); showToast('Insight rejected'); aihRenderHealth(); }
+}
+async function aihApproveAllModal(){
+  const pending = await aihFetch('pending_review');
+  const clean = pending.filter(i => !aihHasAIFlag(i));
+  if(!clean.length){ showToast('No clean insights to bulk-approve', 'error'); return; }
+  openModal('Approve all clean insights', `
+    <div style="font-size:12px;color:var(--text);margin-bottom:6px">Approve <b>${clean.length}</b> insight(s) that carry no AI validation warnings?</div>
+    <div style="font-size:10px;color:var(--muted)">Insights flagged with <b>AI_</b> warnings (${pending.length - clean.length}) stay in the queue for individual review.</div>
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+      <button class="btn btn-ghost btn-sm" data-h-click="hai_close">Cancel</button>
+      <button class="btn btn-primary btn-sm" data-h-click="hai_approveAllConfirm">Approve ${clean.length}</button>
+    </div>`);
+}
+async function aihApproveAllConfirm(){
+  const clean = (await aihFetch('pending_review')).filter(i => !aihHasAIFlag(i));
+  let ok = 0;
+  for(const i of clean){ if(await aihReview(i.id, 'approved')) ok++; }
+  closeModal();
+  showToast(`✓ ${ok} insight(s) approved`);
+  aihRenderHealth();
+}
+
+// ── Rendering: card ──────────────────────────────────────────
+function aihCard(i, mode, canRev){
+  const R = AIH_RAG[i.rag] || {c:'#94A3B8', i:'⚪', l:'—'};
+  const isPf = i.scope === 'portfolio';
+  const c = i.computed || {};
+  const pf = i.pf || {};
+  const fc = i.forecast || {};
+  const flags = (i.data_quality_flags || []).map(String);
+  const aiFlags = flags.filter(f => /^AI_/.test(f));
+  const dataFlags = flags.filter(f => !/^AI_/.test(f));
+  const conf = {high:'#10B981', medium:'#F97316', low:'#EF4444'}[i.confidence] || '#94A3B8';
+
+  const metrics = isPf ? [
+    ['CPI', aihNum(pf.cpi_weighted, 2)],
+    ['SPI', aihNum(pf.spi_weighted, 2) + (Number(pf.projects_with_unreliable_pv) > 0 ? ' ⚠' : '')],
+    ['BAC', pf.bac_total != null ? fmtKWD(pf.bac_total) : '—'],
+    ['PV unreliable', `${pf.projects_with_unreliable_pv ?? '—'} / ${pf.active_projects ?? '—'}`],
+    ['No recent snapshot', `${pf.projects_without_recent_snapshot ?? '—'} / ${pf.active_projects ?? '—'}`]
+  ] : [
+    ['CPI', aihNum(c.cpi_calc, 2)],
+    ['SPI', aihNum(c.spi_calc, 2) + (c.schedule_reliable === false ? ' ⚠' : '')],
+    ['Proxy', aihNum(c.spi_time_proxy, 2)],
+    ['Earned', c.earned_pct != null ? aihNum(c.earned_pct, 1) + '%' : '—'],
+    ['Time', c.time_elapsed_pct != null ? aihNum(c.time_elapsed_pct, 1) + '%' : '—']
+  ];
+
+  const reasons = Array.isArray(c.rag_reasons) ? c.rag_reasons : [];
+  const causes = Array.isArray(i.root_causes) ? i.root_causes : [];
+  const actions = Array.isArray(i.recommended_actions) ? i.recommended_actions : [];
+  const topRisks = Array.isArray(fc.top_risks) ? fc.top_risks : [];
+  const systemic = Array.isArray(fc.systemic_issues) ? fc.systemic_issues : [];
+
+  return `
+  <div class="card" style="margin-bottom:10px;border-left:4px solid ${R.c};${isPf ? 'background:var(--card2)' : ''}">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap">
+      <div style="min-width:0;flex:1">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:3px">
+          ${isPf ? '🏛 PORTFOLIO' : `${esc(i.project_no||'')}${i.department ? ' · ' + esc(i.department) : ''}`}
+        </div>
+        <div style="font-size:13px;font-weight:800;color:var(--text)">${isPf ? 'Portfolio Health' : esc(i.project_name||'')}</div>
+      </div>
+      <div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center">
+        ${aihPill(R.i + ' ' + R.l, R.c)}
+        ${aihPill('Confidence: ' + (i.confidence||'—'), conf)}
+        ${i.trend ? aihPill(AIH_TREND[i.trend] || i.trend, '#94A3B8') : ''}
+        ${aiFlags.length ? aihPill('⚠ Reviewer check', '#F97316') : ''}
+      </div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:6px;margin:10px 0">
+      ${metrics.map(([l,v]) => `<div style="background:var(--n3);border-radius:6px;padding:6px 8px">
+        <div style="font-size:8px;color:var(--faint);text-transform:uppercase;letter-spacing:.4px">${esc(l)}</div>
+        <div style="font-size:12px;font-weight:800;color:var(--text)">${esc(v)}</div></div>`).join('')}
+    </div>
+
+    <div style="font-size:12px;font-weight:700;color:var(--gold);margin-bottom:4px" dir="auto">${esc(i.headline||'')}</div>
+    <div style="font-size:11px;color:var(--text);line-height:1.6" dir="auto">${esc(i.summary||'')}</div>
+
+    ${reasons.length ? `<div style="margin-top:8px;font-size:10px;color:var(--muted)">
+      <b style="color:${R.c}">Why ${R.l} (company policy):</b> ${reasons.map(r => esc(r)).join(' · ')}</div>` : ''}
+
+    ${aiFlags.length ? `<div style="margin-top:8px;background:#F9731611;border:1px solid #F9731644;border-radius:6px;padding:7px 9px;font-size:10px;color:#F97316">
+      ${aiFlags.map(f => '⚠ ' + esc(f)).join('<br>')}</div>` : ''}
+
+    <details style="margin-top:8px">
+      <summary style="cursor:pointer;font-size:10px;color:var(--muted);font-weight:700">
+        Details — ${causes.length} cause(s) · ${actions.length} action(s)${dataFlags.length ? ' · ' + dataFlags.length + ' data flag(s)' : ''}
+      </summary>
+      <div style="margin-top:8px">
+        ${isPf && topRisks.length ? `<div style="font-size:10px;font-weight:700;color:var(--text);margin-bottom:4px">Top risks</div>
+          <ul style="margin:0 0 8px 16px;padding:0;font-size:10px;color:var(--text);line-height:1.6" dir="auto">${topRisks.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
+        ${isPf && systemic.length ? `<div style="font-size:10px;font-weight:700;color:var(--text);margin-bottom:4px">Systemic issues</div>
+          <ul style="margin:0 0 8px 16px;padding:0;font-size:10px;color:var(--text);line-height:1.6" dir="auto">${systemic.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}
+        ${causes.length ? `<div style="font-size:10px;font-weight:700;color:var(--text);margin-bottom:4px">Root causes (evidence-based hypotheses)</div>
+          <ul style="margin:0 0 8px 16px;padding:0;font-size:10px;line-height:1.6" dir="auto">${causes.map(rc => `<li style="color:var(--text)">${esc(rc?.cause||'')}
+            <span style="color:var(--muted)"> — ${esc(rc?.evidence||'')}</span></li>`).join('')}</ul>` : ''}
+        ${fc.comment || fc.finish_risk ? `<div style="font-size:10px;color:var(--text);margin-bottom:8px" dir="auto">
+          <b>Forecast:</b> ${esc(String(fc.finish_risk||'').replace(/_/g,' '))}${fc.eac != null ? ' · EAC ' + esc(fmtKWD(fc.eac)) : ''}${fc.comment ? ' — ' + esc(fc.comment) : ''}</div>` : ''}
+        ${actions.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:10px">
+          <thead><tr style="color:var(--faint);text-align:left">
+            <th style="padding:4px 6px">Priority</th><th style="padding:4px 6px">Action</th><th style="padding:4px 6px">Owner</th><th style="padding:4px 6px;text-align:right">Due</th></tr></thead>
+          <tbody>${actions.map(a => `<tr style="border-top:1px solid var(--bdr)">
+            <td style="padding:5px 6px">${aihPill(a?.priority||'—', AIH_PRIO[a?.priority] || '#94A3B8')}</td>
+            <td style="padding:5px 6px;color:var(--text)" dir="auto">${esc(a?.action||'')}</td>
+            <td style="padding:5px 6px;color:var(--muted);white-space:nowrap">${esc(a?.owner_role||'')}</td>
+            <td style="padding:5px 6px;color:var(--muted);text-align:right;white-space:nowrap">${a?.due_in_days != null ? esc(a.due_in_days) + 'd' : '—'}</td></tr>`).join('')}</tbody>
+        </table></div>` : ''}
+        ${dataFlags.length ? `<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:8px">
+          ${dataFlags.map(f => `<span style="font-size:9px;background:var(--n3);border:1px solid var(--bdr);border-radius:5px;padding:2px 6px;color:var(--muted)">${esc(f)}</span>`).join('')}</div>` : ''}
+      </div>
+    </details>
+
+    ${mode === 'review' && canRev ? `
+    <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;padding-top:10px;border-top:1px solid var(--bdr)">
+      <button class="btn btn-danger btn-sm" data-h-click="hai_reject" data-ha-click="${esc(JSON.stringify([String(i.id)]))}">✕ Reject</button>
+      <button class="btn btn-primary btn-sm" data-h-click="hai_approve" data-ha-click="${esc(JSON.stringify([String(i.id)]))}">✓ Approve</button>
+    </div>` : ''}
+    ${mode === 'view' ? `<div style="margin-top:8px;font-size:9px;color:var(--faint)">Approved ${esc(aihDate(i.reviewed_at))}${i.reviewer_notes ? ' · Note: ' + esc(i.reviewer_notes) : ''}</div>` : ''}
+  </div>`;
+}
+
+// ── Rendering: page ──────────────────────────────────────────
+function aihTabsHtml(){
+  const t = (id, lbl) => `<button data-h-click="hai_tab" data-ha-click="${esc(JSON.stringify([id]))}"
+    style="background:${AIH.tab===id ? '#C9A84C18' : 'none'};border:1px solid ${AIH.tab===id ? 'var(--gold)' : 'var(--bdr)'};border-radius:6px;padding:6px 14px;font-size:11px;color:${AIH.tab===id ? 'var(--gold)' : 'var(--muted)'};cursor:pointer;font-weight:${AIH.tab===id ? '700' : '400'};font-family:inherit">${lbl}</button>`;
+  return `<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px">${t('health', '🩺 Health Review')}${t('assistant', '💬 Assistant')}</div>`;
+}
+
+async function aihLoadHub(){
+  const el = document.getElementById('page-ai');
+  if(!el) return;
+  if(AIH.tab === 'assistant'){
+    await _aihOrigLoadAI();
+    el.insertAdjacentHTML('afterbegin', aihTabsHtml());
+    return;
+  }
+  el.innerHTML = aihTabsHtml() + `<div id="aih-root"><div class="loading">Loading AI Health Review…</div></div>`;
+  await aihRenderHealth();
+}
+
+async function aihRenderHealth(){
+  const root = document.getElementById('aih-root');
+  if(!root) return;
+  try{
+    const canRev = await aihCanReview();
+    const [runR, pending, approved] = await Promise.all([
+      sb.from('v_ai_runs_monitor').select('*').limit(12),
+      aihFetch('pending_review'),
+      aihFetch('approved')
+    ]);
+    if(runR.error) throw runR.error;
+    const runs = runR.data || [];
+    const last = runs[0];
+    const live = runs.find(r => r.status === 'running' && !r.is_stalled);
+    const clean = pending.filter(i => !aihHasAIFlag(i)).length;
+    const count = (list, rag) => list.filter(i => i.scope === 'project' && i.rag === rag).length;
+
+    const sub = (id, lbl) => `<button data-h-click="hai_sub" data-ha-click="${esc(JSON.stringify([id]))}"
+      style="background:none;border:none;border-bottom:2px solid ${AIH.sub===id ? 'var(--gold)' : 'transparent'};padding:6px 10px;font-size:11px;color:${AIH.sub===id ? 'var(--gold)' : 'var(--muted)'};cursor:pointer;font-weight:${AIH.sub===id ? '700' : '400'};font-family:inherit">${lbl}</button>`;
+
+    let body = '';
+    if(AIH.sub === 'queue'){
+      body = !pending.length
+        ? `<div class="card" style="text-align:center;padding:30px;color:var(--muted);font-size:11px">
+             ✅ No insights awaiting review.${canRev ? '<br>Run an analysis to generate the next health review.' : ''}</div>`
+        : `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px">
+             <div style="display:flex;gap:6px;flex-wrap:wrap">
+               ${aihPill('🔴 ' + count(pending,'red') + ' red', '#EF4444')}
+               ${aihPill('🟡 ' + count(pending,'amber') + ' amber', '#F97316')}
+               ${aihPill('🟢 ' + count(pending,'green') + ' green', '#10B981')}
+               ${pending.length - clean ? aihPill('⚠ ' + (pending.length - clean) + ' need individual check', '#F97316') : ''}
+             </div>
+             ${canRev && clean ? `<button class="btn btn-primary btn-sm" data-h-click="hai_approveAll">✓ Approve all clean (${clean})</button>` : ''}
+           </div>
+           ${pending.map(i => aihCard(i, 'review', canRev)).join('')}`;
+    } else if(AIH.sub === 'approved'){
+      body = !approved.length
+        ? `<div class="card" style="text-align:center;padding:30px;color:var(--muted);font-size:11px">No approved insights yet. Approved insights appear on the Dashboard and in the CEO Report.</div>`
+        : approved.map(i => aihCard(i, 'view', canRev)).join('');
+    } else {
+      body = `<div class="card" style="padding:0;overflow-x:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:10px">
+          <thead><tr style="color:var(--faint);text-align:left">
+            ${['Started','Status','Trigger','Provider / Model','As of','Lang','Progress','Failed','Tokens in/out','Cost','Duration','Issues']
+              .map(h => `<th style="padding:8px 10px;white-space:nowrap">${h}</th>`).join('')}</tr></thead>
+          <tbody>${runs.map(r => {
+            const sc = {success:'#10B981', partial:'#F97316', failed:'#EF4444', running:'#3B82F6'}[r.status] || '#94A3B8';
+            return `<tr style="border-top:1px solid var(--bdr)">
+              <td style="padding:7px 10px;white-space:nowrap;color:var(--text)">${esc(aihDate(r.started_at))}</td>
+              <td style="padding:7px 10px">${aihPill(r.is_stalled ? 'stalled' : r.status, r.is_stalled ? '#EF4444' : sc)}</td>
+              <td style="padding:7px 10px;color:var(--muted)">${esc(r.trigger_type)}</td>
+              <td style="padding:7px 10px;color:var(--muted);white-space:nowrap">${esc(r.provider||'—')} · ${esc(r.model||'—')}</td>
+              <td style="padding:7px 10px;color:var(--muted);white-space:nowrap">${esc(r.as_of||'—')}</td>
+              <td style="padding:7px 10px;color:var(--muted)">${esc(r.language||'—')}</td>
+              <td style="padding:7px 10px;color:var(--text)">${esc(r.projects_done)}/${esc(r.projects_count)}</td>
+              <td style="padding:7px 10px;color:${r.projects_failed ? '#EF4444' : 'var(--muted)'}">${esc(r.projects_failed)}</td>
+              <td style="padding:7px 10px;color:var(--muted);white-space:nowrap">${Number(r.tokens_in||0).toLocaleString()} / ${Number(r.tokens_out||0).toLocaleString()}</td>
+              <td style="padding:7px 10px;color:var(--muted)">$${aihNum(r.cost_usd, 4)}</td>
+              <td style="padding:7px 10px;color:var(--muted)">${r.duration_ms ? Math.round(r.duration_ms/1000) + 's' : '—'}</td>
+              <td style="padding:7px 10px;color:var(--muted);max-width:260px">${esc(r.error_message||'')}</td></tr>`;
+          }).join('') || `<tr><td colspan="12" style="padding:20px;text-align:center;color:var(--muted)">No runs yet</td></tr>`}</tbody>
+        </table></div>`;
+    }
+
+    root.innerHTML = `
+      <div class="page-head">
+        <div class="page-head-left"><span style="font-size:22px">🩺</span>
+          <div><h1>AI Project Health Review</h1>
+          <div class="sub">Company RAG policy · AI narrative · Human approval before publishing</div></div>
+        </div>
+        ${canRev ? `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <select id="aih-lang" style="background:var(--n3);border:1px solid var(--bdr);border-radius:6px;padding:6px 8px;color:var(--text);font-size:11px;font-family:inherit">
+            <option value="en">English</option><option value="ar">العربية</option></select>
+          ${live && !AIH.running
+            ? `<button class="btn btn-primary btn-sm" data-h-click="hai_resume">▶ Resume run (${esc(live.projects_done)}/${esc(live.projects_count)})</button>`
+            : `<button class="btn btn-primary btn-sm" data-h-click="hai_run" ${AIH.running ? 'disabled' : ''}>🤖 Run Analysis</button>`}
+        </div>` : ''}
+      </div>
+      <div id="aih-runbar"></div>
+      ${last ? `<div style="font-size:10px;color:var(--muted);margin-bottom:12px">
+        Last run: <b style="color:var(--text)">${esc(aihDate(last.started_at))}</b> · ${esc(last.is_stalled ? 'stalled' : last.status)}
+        · as of ${esc(last.as_of||'—')} · ${esc(last.provider||'')} ${esc(last.model||'')}
+        · ${Number(last.tokens_in||0).toLocaleString()} tokens · $${aihNum(last.cost_usd, 4)}</div>` : ''}
+      <div style="display:flex;gap:4px;border-bottom:1px solid var(--bdr);margin-bottom:12px;flex-wrap:wrap">
+        ${sub('queue', `Review Queue (${pending.length})`)}${sub('approved', `Approved (${approved.length})`)}${sub('history', 'Run History')}
+      </div>
+      ${body}`;
+    aihRenderRunBar();
+  }catch(e){
+    root.innerHTML = `<div class="card" style="color:#EF4444;font-size:11px">
+      Could not load AI Health Review: ${esc(e.message || e)}<br>
+      <span style="color:var(--muted)">Check that migrations sp360_ai_01…04 are applied.</span></div>`;
+    if(typeof logError === 'function') logError('AI', 'health_load', e);
+  }
+}
+
+// ── Dashboard card ───────────────────────────────────────────
+async function aihInjectDashboard(){
+  const el = document.getElementById('page-dashboard');
+  if(!el || document.getElementById('aih-dash')) return;
+  const [approved, pendR] = await Promise.all([
+    aihFetch('approved'),
+    sb.from('ai_insights').select('id', {count:'exact', head:true}).eq('status', 'pending_review')
+  ]);
+  const pendingCount = pendR.count || 0;
+  const canRev = await aihCanReview();
+  if(!approved.length && !(canRev && pendingCount)) return;
+
+  const pfi = approved.find(i => i.scope === 'portfolio');
+  const proj = approved.filter(i => i.scope === 'project');
+  const R = AIH_RAG[pfi?.rag] || {c:'#94A3B8', i:'⚪', l:'—'};
+  const n = rag => proj.filter(i => i.rag === rag).length;
+  const html = `
+  <div id="aih-dash" class="card" style="margin-bottom:12px;border-left:4px solid ${R.c}">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap">
+      <div style="min-width:0;flex:1">
+        <div style="font-size:10px;color:var(--muted);margin-bottom:3px">🤖 AI HEALTH REVIEW${pfi ? ' · approved ' + esc(aihDate(pfi.reviewed_at)) : ''}</div>
+        <div style="font-size:12px;font-weight:700;color:var(--gold)" dir="auto">${pfi ? esc(pfi.headline) : 'No approved portfolio review yet'}</div>
+      </div>
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        ${proj.length ? aihPill('🔴 ' + n('red'), '#EF4444') + aihPill('🟡 ' + n('amber'), '#F97316') + aihPill('🟢 ' + n('green'), '#10B981') : ''}
+        ${canRev && pendingCount ? aihPill('⏳ ' + pendingCount + ' awaiting review', '#3B82F6') : ''}
+        <button class="btn btn-ghost btn-sm" data-h-click="hai_open">Open →</button>
+      </div>
+    </div>
+  </div>`;
+  const head = el.querySelector('.page-head');
+  if(head) head.insertAdjacentHTML('afterend', html); else el.insertAdjacentHTML('afterbegin', html);
+}
+
+// ── CEO Report section (screen + print) ──────────────────────
+async function aihInjectCEO(){
+  const el = document.getElementById('page-ceo');
+  if(!el || document.getElementById('aih-ceo')) return;
+  const approved = await aihFetch('approved');
+  if(!approved.length) return;
+  const pfi = approved.find(i => i.scope === 'portfolio');
+  const proj = approved.filter(i => i.scope === 'project');
+  const R = AIH_RAG[pfi?.rag] || {c:'#94A3B8', i:'⚪', l:'—'};
+  const firstAction = i => (Array.isArray(i.recommended_actions) && i.recommended_actions[0]) || null;
+  const html = `
+  <div id="aih-ceo" class="card" style="margin-bottom:12px;border-left:4px solid ${R.c}">
+    <div class="sec-head"><div class="sec-title"><span>🤖</span>AI Health Review — Executive Narrative</div>
+      <div style="font-size:9px;color:var(--faint)">RAG per company policy · narrative by AI · approved by PMO</div></div>
+    ${pfi ? `
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">${aihPill(R.i + ' PORTFOLIO ' + R.l, R.c)}
+        ${pfi.confidence ? aihPill('Data confidence: ' + pfi.confidence, '#94A3B8') : ''}</div>
+      <div style="font-size:13px;font-weight:800;color:var(--gold);margin-bottom:4px" dir="auto">${esc(pfi.headline)}</div>
+      <div style="font-size:11px;color:var(--text);line-height:1.6;margin-bottom:10px" dir="auto">${esc(pfi.summary)}</div>
+      ${Array.isArray(pfi.forecast?.top_risks) && pfi.forecast.top_risks.length ? `
+        <div style="font-size:10px;font-weight:700;color:var(--text);margin-bottom:3px">Top risks</div>
+        <ul style="margin:0 0 10px 16px;padding:0;font-size:10px;color:var(--text);line-height:1.6" dir="auto">
+          ${pfi.forecast.top_risks.map(r => `<li>${esc(r)}</li>`).join('')}</ul>` : ''}` : ''}
+    ${proj.length ? `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:10px">
+      <thead><tr style="color:var(--faint);text-align:left">
+        <th style="padding:5px 6px">RAG</th><th style="padding:5px 6px">Project</th><th style="padding:5px 6px">Assessment</th>
+        <th style="padding:5px 6px">Priority action</th><th style="padding:5px 6px">Confidence</th></tr></thead>
+      <tbody>${proj.map(i => {
+        const r = AIH_RAG[i.rag] || {c:'#94A3B8', i:'⚪', l:'—'};
+        const a = firstAction(i);
+        return `<tr style="border-top:1px solid var(--bdr)">
+          <td style="padding:6px">${aihPill(r.i + ' ' + r.l, r.c)}</td>
+          <td style="padding:6px;white-space:nowrap"><b style="color:var(--text)">${esc(i.project_no)}</b><div style="color:var(--muted)">${esc(i.project_name)}</div></td>
+          <td style="padding:6px;color:var(--text)" dir="auto">${esc(i.headline)}</td>
+          <td style="padding:6px;color:var(--text)" dir="auto">${a ? esc(a.action) + `<div style="color:var(--muted)">${esc(a.owner_role||'')} · ${esc(a.due_in_days ?? '—')}d</div>` : '—'}</td>
+          <td style="padding:6px;color:var(--muted)">${esc(i.confidence||'—')}</td></tr>`;
+      }).join('')}</tbody></table></div>` : ''}
+  </div>`;
+  const head = el.querySelector('.page-head');
+  if(head) head.insertAdjacentHTML('afterend', html); else el.insertAdjacentHTML('afterbegin', html);
+}
+
+// ── CEO PDF page (called from exportCEOPDF before footers) ───
+async function aiAppendCEOPdfPage(doc, col){
+  const approved = await aihFetch('approved');
+  if(!approved.length) return;
+  const isArabic = s => /[؀-ۿ]/.test(String(s||''));
+  const safe = s => isArabic(s) ? '(Arabic narrative — see on-screen report)' : String(s||'');
+  const pfi = approved.find(i => i.scope === 'portfolio');
+  const proj = approved.filter(i => i.scope === 'project');
+  const ragCol = r => r === 'red' ? col.red : r === 'amber' ? col.amber : col.green;
+
+  doc.addPage();
+  doc.setTextColor(...col.navy); doc.setFontSize(11); doc.setFont('helvetica','bold');
+  doc.text('AI HEALTH REVIEW — EXECUTIVE NARRATIVE', 14, 14);
+  doc.setFontSize(7); doc.setFont('helvetica','normal'); doc.setTextColor(100,100,100);
+  doc.text('RAG per company policy · narrative generated by AI · reviewed and approved by PMO', 14, 19);
+
+  let y = 26;
+  if(pfi){
+    doc.setFillColor(...ragCol(pfi.rag)); doc.roundedRect(14, y-4, 32, 6, 1, 1, 'F');
+    doc.setTextColor(...col.white); doc.setFontSize(7); doc.setFont('helvetica','bold');
+    doc.text('PORTFOLIO ' + String(pfi.rag||'').toUpperCase(), 30, y, {align:'center'});
+    doc.setTextColor(...col.navy); doc.setFontSize(9);
+    const h = doc.splitTextToSize(safe(pfi.headline), 225); doc.text(h, 50, y); y += 5 * h.length + 2;
+    doc.setFont('helvetica','normal'); doc.setFontSize(8); doc.setTextColor(60,60,60);
+    const s = doc.splitTextToSize(safe(pfi.summary), 269); doc.text(s, 14, y); y += 4 * s.length + 4;
+  }
+  if(proj.length){
+    doc.autoTable({
+      head: [['RAG','Project','Assessment','Priority action','Owner','Conf.']],
+      body: proj.map(i => {
+        const a = (Array.isArray(i.recommended_actions) && i.recommended_actions[0]) || {};
+        return [String(i.rag||'').toUpperCase(), `${i.project_no||''}\n${safe(i.project_name)}`,
+                safe(i.headline), safe(a.action||'—'), a.owner_role||'—', i.confidence||'—'];
+      }),
+      startY: y,
+      styles: {fontSize:7, cellPadding:1.5, textColor:col.navy, valign:'top'},
+      headStyles: {fillColor:col.navy, textColor:col.white, fontStyle:'bold'},
+      alternateRowStyles: {fillColor:col.lgray},
+      columnStyles: {0:{cellWidth:16, fontStyle:'bold'}, 1:{cellWidth:46}, 2:{cellWidth:98}, 3:{cellWidth:78}, 4:{cellWidth:20}, 5:{cellWidth:11}},
+      didParseCell: d => { if(d.section === 'body' && d.column.index === 0){ d.cell.styles.textColor = ragCol(String(d.cell.raw).toLowerCase()); } },
+      margin: {left:14, right:14, bottom:14}
+    });
+  }
+}
+
+// ── Handlers (CSP delegation registry) ───────────────────────
+Object.assign(__H, {
+  hai_tab:               function(event, __a){ AIH.tab = __a[0]; aihLoadHub(); },
+  hai_sub:               function(event, __a){ AIH.sub = __a[0]; aihRenderHealth(); },
+  hai_run:               function(event, __a){ aihRun('analyze'); },
+  hai_resume:            function(event, __a){ aihRun('resume'); },
+  hai_approve:           function(event, __a){ aihApprove(__a[0]); },
+  hai_reject:            function(event, __a){ aihRejectModal(__a[0]); },
+  hai_rejectConfirm:     function(event, __a){ aihRejectConfirm(__a[0]); },
+  hai_approveAll:        function(event, __a){ aihApproveAllModal(); },
+  hai_approveAllConfirm: function(event, __a){ aihApproveAllConfirm(); },
+  hai_close:             function(event, __a){ closeModal(); },
+  hai_open:              function(event, __a){ AIH.tab = 'health'; navTo('ai', document.getElementById('nav-ai')); }
+});
+
+// ── Wrap existing loaders (no edits to their bodies) ─────────
+const _aihOrigLoadAI = loadAI;
+loadAI = aihLoadHub;
+
+const _aihOrigLoadDashboard = loadDashboard;
+loadDashboard = async function(...args){
+  const r = await _aihOrigLoadDashboard.apply(this, args);
+  try{ await aihInjectDashboard(); }catch(e){ console.warn('[AI] dashboard card skipped:', e?.message || e); }
+  return r;
+};
+
+const _aihOrigLoadCEO = loadCEO;
+loadCEO = async function(...args){
+  const r = await _aihOrigLoadCEO.apply(this, args);
+  try{ await aihInjectCEO(); }catch(e){ console.warn('[AI] CEO section skipped:', e?.message || e); }
+  return r;
+};
