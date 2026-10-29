@@ -15,15 +15,15 @@
  * app.js updates do NOT need a bump (network-first picks them up).
  * ===================================================================== */
 
-const CACHE_VERSION = 'sp360-shell-v1';
+const CACHE_VERSION = 'sp360-shell-v2';
 const SHELL = [
   './',
   './index.html',
   './app.js',
   './supabase.min.js',
   './manifest.json',
-  './icons/icon-192.png',
-  './icons/icon-512.png',
+  './icon-192.png',
+  './icon-512.png',
 ];
 
 self.addEventListener('install', (event) => {
