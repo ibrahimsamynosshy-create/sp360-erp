@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
 <title>SP360 — Integrated ERP + CRM + Project Controls</title>
 <!-- PWA -->
-<meta name="theme-color" content="#1E3A5F"/>
+<meta name="theme-color" content="#0B1933"/>
 <meta name="mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-capable" content="yes"/>
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
@@ -19,7 +19,9 @@
      frame-ancestors is ignored in <meta>; clickjacking protection needs an HTTP header (Cloudflare/Netlify). -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://sqizirpsatofcoqshwer.supabase.co wss://sqizirpsatofcoqshwer.supabase.co https://cdn.jsdelivr.net; img-src 'self' data: blob:; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"/>
 <link rel="manifest" href="manifest.json"/>
-<!-- Icons -->
+<!-- Icons (PWA v1: icons/ folder next to index.html) -->
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png"/>
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png"/>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231E3A5F'/><text x='16' y='23' font-family='Arial' font-weight='900' font-size='14' fill='%23C9A84C' text-anchor='middle'>SP</text></svg>"/>
 <script src="supabase.min.js?v=4.2.1"></script>
 <style>
@@ -793,6 +795,6 @@ img,canvas,svg{max-width:100%;height:auto}
   </div>
 </div>
 
-<script src="app.js?v=4.2.1"></script>
+<script src="app.js?v=4.3.1"></script>
 </body>
 </html>
