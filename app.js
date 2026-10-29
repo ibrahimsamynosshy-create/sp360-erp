@@ -1,4 +1,5 @@
-/* SP360 Integrated Platform — application script (v4.3.0)
+/* SP360 Integrated Platform — application script (v4.3.1)
+ * v4.3.1 — AI Health: half-up rounding in metric tiles (matches AI narrative)
  * v4.3.0 — P14 AI Project Health Review (module appended at end of file; wraps loadAI/loadDashboard/loadCEO)
  * Loaded by index.html as <script src="app.js">. Must stay a classic (non-module) script:
  * top-level functions/lets are shared globals used by the data-h-* event delegation registry. */
@@ -19695,7 +19696,9 @@ const AIH_TREND = {improving:'↗ Improving', stable:'→ Stable', deteriorating
 const AIH_PRIO  = {high:'#EF4444', medium:'#F97316', low:'#94A3B8'};
 const aihRagOrder = r => ({red:0, amber:1, green:2}[r] ?? 3);
 const aihHasAIFlag = i => (i.data_quality_flags||[]).some(f => /^AI_/.test(String(f)));
-const aihNum = (v, d=2) => (v===null || v===undefined || v==='' || isNaN(Number(v))) ? '—' : Number(v).toFixed(d);
+// Half-up rounding (same rule as the AI narrative): 0.235 → 0.24, not toFixed()'s float artefact 0.23
+const aihRound = (n, d) => Number(Math.round(Number(n + 'e' + d)) + 'e-' + d);
+const aihNum = (v, d=2) => (v===null || v===undefined || v==='' || isNaN(Number(v))) ? '—' : aihRound(Number(v), d).toFixed(d);
 const aihDate = d => d ? new Date(d).toLocaleString('en-GB',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}) : '—';
 const aihPill = (txt, c) => `<span style="display:inline-block;border-radius:10px;padding:2px 9px;font-size:9px;font-weight:800;letter-spacing:.3px;background:${c}1F;color:${c};border:1px solid ${c}55">${esc(txt)}</span>`;
 const aihSortInsights = list => [...list].sort((a,b) =>
