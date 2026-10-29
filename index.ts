@@ -1,8 +1,16 @@
 // =====================================================================
 // SP360 — AI Project Health Analyst
-// Supabase Edge Function: ai-health-analyst  (v0.4.1)
+// Supabase Edge Function: ai-health-analyst  (v0.4.7)
 // v0.4.1: RAG and confidence come from company policy (fn_ai_build_payload v2.2);
 //         the AI explains them and cannot override them.
+// v0.4.4: Portfolio top_risks are structured {project_no, risk, impact} and
+//         normalized to "PROJECT — Risk — Impact" (UI/PDF unchanged: strings).
+// v0.4.7: Validator also checks "-103,560 KWD" (amount before currency).
+// v0.4.6: Language lock (reminder in every call + AI_WRONG_LANGUAGE flag); Arabic units
+//         (يوم/أيام, %N, د.ك/دينار) in the quantity validator.
+// v0.4.5: Validator also checks whole-number quantities (days, %, KWD amounts),
+//         e.g. "150 days overdue" when the data says 120 → AI_UNVERIFIED_QUANTITIES.
+//         Prompt asks for half-up rounding and exact day counts.
 //
 // Provider-agnostic, resumable analysis:
 //   • AI_PROVIDER = groq (default, free tier) | anthropic
@@ -23,13 +31,13 @@
 //   anthropic: ANTHROPIC_API_KEY       (required when AI_PROVIDER=anthropic)
 //   optional:  AI_PROVIDER, AI_MODEL, AI_OUTPUT_LANGUAGE,
 //              AI_PRICE_IN_PER_MTOK, AI_PRICE_OUT_PER_MTOK,
-//              AI_TIME_BUDGET_MS (default 110000), AI_CRON_SECRET (Step 4)
+//              AI_TIME_BUDGET_MS (default 110000), AI_CRON_SECRET (pg_cron)
 // =====================================================================
 
 import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 
-const FUNCTION_VERSION = "ai-health-analyst@0.4.3";   // 0.4.3: CPI wording contradiction guard
-const PROMPT_VERSION = "phs-v1.3";   // v1.2: policy RAG; v1.3: unconfirmed milestones + CPI wording
+const FUNCTION_VERSION = "ai-health-analyst@0.4.7";   // 0.4.7: amount-before-currency check
+const PROMPT_VERSION = "phs-v1.6";   // v1.3 CPI wording; v1.4 top_risks format; v1.5 exact counts + half-up rounding; v1.6 language lock + Arabic units
 
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
@@ -39,6 +47,7 @@ const CALL_TIMEOUT_MS = 60_000;
 const EST_CALL_MS = 20_000;          // reserve per call when checking the time budget
 const STALE_RUN_MINUTES = 10;
 const MAX_RETRIES = 3;
+const PORTFOLIO_KEY = "PORTFOLIO";   // allowed project_no for portfolio-wide risks
 
 const RAG = ["green", "amber", "red"] as const;
 const TREND = ["improving", "stable", "deteriorating", "unknown"] as const;
@@ -101,6 +110,20 @@ function loadLlmConfig(): LlmConfig | string {
 // ---------------------------------------------------------------------
 // Prompts
 // ---------------------------------------------------------------------
+/** Repeated in every user message — the system prompt alone is not enough to stop language drift. */
+function langReminder(language: Lang): string {
+  return language === "ar"
+    ? "OUTPUT LANGUAGE: Arabic (Modern Standard). All narrative fields in Arabic; numbers and metric names in Latin characters."
+    : "OUTPUT LANGUAGE: English ONLY. Every narrative field (headline, summary, causes, actions, comments, risks) must be in English, even if some input fields are in Arabic.";
+}
+
+/** Share of letters that are Arabic, 0..1. */
+function arabicRatio(text: string): number {
+  const ar = (text.match(/[\u0600-\u06FF]/g) ?? []).length;
+  const lat = (text.match(/[A-Za-z]/g) ?? []).length;
+  return ar + lat === 0 ? 0 : ar / (ar + lat);
+}
+
 function baseRules(language: Lang): string {
   const lang = language === "ar"
     ? "Write all narrative fields in professional Modern Standard Arabic. Keep project numbers, metric names (CPI, SPI, EAC, PV, EV, BAC) and all numbers in Latin characters."
@@ -108,7 +131,8 @@ function baseRules(language: Lang): string {
   return `You are a Senior Project Controls Engineer preparing the weekly health review for the CEO and Board of SP360, a Kuwait-based systems-integration contractor. Currency: KWD.
 
 RULES
-1. Use ONLY facts and numbers present in the data. Never invent suppliers, events, dates, causes or figures. Never recompute EVM metrics: the "computed" block is authoritative. Round to 2 decimals at most.
+1. Use ONLY facts and numbers present in the data. Never invent suppliers, events, dates, causes or figures. Never recompute EVM metrics: the "computed" block is authoritative. Round to 2 decimals at most, half-up (0.235 → 0.24).
+   Day counts, percentages and KWD amounts must be copied exactly from the data (e.g. "overdue 120 days" only if the data says 120) — never estimate or round them up.
 2. Read data_quality_flags FIRST.
    - PV_STALE or PV_SUSPECT: spi_calc is unreliable. Use computed.spi_time_proxy as the cross-check and say so. The proxy assumes linear progress, so it OVERSTATES delay for back-loaded / S-curve plans (civil works, early phases): an indicator, not a fact.
    - If both schedule indices are doubtful: schedule_basis = "both_unreliable", confidence = "low".
@@ -135,7 +159,12 @@ You receive portfolio totals and the already-completed project assessments. Do N
 - rag: set exactly to "portfolio_rag" (policy). Explain it.
 - summary: weighted CPI/SPI from "portfolio" (state if SPI is unreliable because of PV flags), RAG counts.
 - systemic_issues: problems spanning several projects (e.g. stale PV, missing snapshots).
-- top_risks: the 3 most material risks, each naming the project_no.
+- top_risks: EXACTLY 3 items, most material first. Each item is an object:
+    project_no — copied exactly from assessments[].project_no ("${PORTFOLIO_KEY}" only for a portfolio-wide risk);
+    risk       — what may go wrong and why, in one short clause (the cause, not the metric);
+    impact     — the consequence for the company, quantified with a number taken from the data
+                 (KWD overrun / EAC vs BAC, CPI, SPI, days, % complete). No impact without a number.
+  Prefer red projects first, then amber. Do not list the same project twice unless fewer than 3 projects are at risk.
 - root_causes and recommended_actions at portfolio / process level.`;
 
 // ---------------------------------------------------------------------
@@ -193,19 +222,38 @@ const PROJECT_TOOL: ToolDef = {
   schema: { type: "object", properties: insightProperties, required: insightRequired },
 };
 
-const PORTFOLIO_TOOL: ToolDef = {
-  name: "submit_portfolio_assessment",
-  description: "Submit the portfolio-level health assessment.",
-  schema: {
-    type: "object",
-    properties: {
-      ...insightProperties,
-      systemic_issues: { type: "array", items: { type: "string" } },
-      top_risks: { type: "array", items: { type: "string" } },
+/** Portfolio tool is built per run so top_risks.project_no is constrained to real projects. */
+function portfolioTool(knownNos: string[]): ToolDef {
+  const projectNo: Record<string, unknown> = knownNos.length
+    ? { type: "string", enum: [...knownNos, PORTFOLIO_KEY] }
+    : { type: "string" };
+  return {
+    name: "submit_portfolio_assessment",
+    description: "Submit the portfolio-level health assessment.",
+    schema: {
+      type: "object",
+      properties: {
+        ...insightProperties,
+        systemic_issues: { type: "array", items: { type: "string" } },
+        top_risks: {
+          type: "array",
+          minItems: 1,
+          maxItems: 3,
+          items: {
+            type: "object",
+            properties: {
+              project_no: projectNo,
+              risk: { type: "string" },
+              impact: { type: "string" },
+            },
+            required: ["project_no", "risk", "impact"],
+          },
+        },
+      },
+      required: [...insightRequired, "systemic_issues", "top_risks"],
     },
-    required: [...insightRequired, "systemic_issues", "top_risks"],
-  },
-};
+  };
+}
 
 // ---------------------------------------------------------------------
 // Rate-limit gate (provider headers → wait before next call)
@@ -410,6 +458,58 @@ function unverifiedNumbers(text: string, src: number[]): string[] {
   }))];
 }
 
+/**
+ * Whole-number quantities with a unit — "150 days", "42%", "KWD 1,250,000", "KWD 3.0M" —
+ * that cannot be traced back to the source data. Catches invented counts the decimal
+ * check misses. Money allows 1% tolerance (K/M abbreviations); days/percent are exact
+ * after rounding.
+ */
+function unverifiedQuantities(text: string, src: number[]): string[] {
+  const bad: string[] = [];
+  const toNum = (s: string) => Number(s.replace(/,/g, ""));
+  const matches = (v: number, tol: number, alsoPct = false) =>
+    src.some((n) => {
+      const cands = alsoPct ? [n, n * 100] : [n];
+      return cands.some((c) =>
+        tol > 0 ? Math.abs(c - v) <= Math.max(1, Math.abs(c) * tol)
+                : Math.round(c) === Math.round(v) || Math.abs(c - v) < 1e-9);
+    });
+
+  for (const m of text.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*(?:-\s*)?(days?|d)\b/gi)) {
+    const v = toNum(m[1]);
+    if (Number.isFinite(v) && v >= 2 && !matches(v, 0)) bad.push(`${m[1]} ${m[2]}`);
+  }
+  for (const m of text.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*(يوما|يوماً|يوم|أيام|ايام)/g)) {
+    const v = toNum(m[1]);
+    if (Number.isFinite(v) && v >= 2 && !matches(v, 0)) bad.push(`${m[1]} ${m[2]}`);
+  }
+  for (const m of text.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*%/g)) {
+    const v = toNum(m[1]);
+    if (Number.isFinite(v) && !matches(v, 0, true)) bad.push(`${m[1]}%`);
+  }
+  for (const m of text.matchAll(/(?<![\d.])%(\d[\d,]*(?:\.\d+)?)/g)) {
+    const v = toNum(m[1]);
+    if (Number.isFinite(v) && !matches(v, 0, true)) bad.push(`%${m[1]}`);
+  }
+  for (const m of text.matchAll(/(?:\b(?:KWD|KD)|د\.ك|دينار)\s*(\d[\d,]*(?:\.\d+)?)\s*([KkMm]|مليون|ألف)?/g)) {
+    let v = toNum(m[1]);
+    if (m[2]) v *= /m|مليون/i.test(m[2]) ? 1_000_000 : 1_000;
+    if (Number.isFinite(v) && v >= 100 && !matches(v, m[2] ? 0.05 : 0.01)) bad.push(m[0].trim());
+  }
+  // amount written before the currency: "-103,560 KWD", "3.00M KWD", "257,292 د.ك"
+  for (const m of text.matchAll(/(\d[\d,]*(?:\.\d+)?)\s*([KkMm])?\s*(?:KWD|KD|د\.ك|دينار)/g)) {
+    let v = toNum(m[1]);
+    if (m[2]) v *= /m/i.test(m[2]) ? 1_000_000 : 1_000;
+    if (Number.isFinite(v) && v >= 100 && !matches(v, m[2] ? 0.05 : 0.01) && !matches(-v, m[2] ? 0.05 : 0.01)) bad.push(m[0].trim());
+  }
+  for (const m of text.matchAll(/\b(?:KWD|KD)\s*(\d[\d,]*(?:\.\d+)?)\s*([KkMm])?\b/g)) {
+    let v = toNum(m[1]);
+    if (m[2]) v *= /m/i.test(m[2]) ? 1_000_000 : 1_000;
+    if (Number.isFinite(v) && v >= 100 && !matches(v, m[2] ? 0.05 : 0.01)) bad.push(m[0].trim());
+  }
+  return [...new Set(bad)];
+}
+
 function pick<T extends readonly string[]>(
   value: unknown, allowed: T, fallback: T[number], issues: string[], label: string,
 ): T[number] {
@@ -418,7 +518,7 @@ function pick<T extends readonly string[]>(
   return fallback;
 }
 
-type Policy = { rag?: string; confidence?: string; cpi?: number | null };
+type Policy = { rag?: string; confidence?: string; cpi?: number | null; knownProjects?: string[]; lang?: Lang };
 
 /** Deterministic wording check: narrative must not contradict CPI. */
 function cpiContradiction(text: string, cpi: number | null | undefined): string | null {
@@ -430,6 +530,40 @@ function cpiContradiction(text: string, cpi: number | null | undefined): string 
     return `AI_CONTRADICTION: text says under budget but CPI ${cpi} < 1 (over budget) — reject or correct`;
   }
   return null;
+}
+
+/**
+ * top_risks → "PROJECT — Risk — Impact" strings (the UI and PDF render strings).
+ * Accepts the structured objects (preferred) or legacy strings; flags unknown
+ * projects, missing impacts and impacts without any number.
+ */
+function normalizeTopRisks(raw: unknown, known: string[]): { risks: string[]; flags: string[] } {
+  const flags: string[] = [];
+  if (!Array.isArray(raw)) return { risks: [], flags };
+  const knownSet = new Set([...known, PORTFOLIO_KEY]);
+  const risks: string[] = [];
+  const clean = (s: unknown) => String(s ?? "").replace(/\s+/g, " ").trim();
+
+  for (const item of raw.slice(0, 3)) {
+    let no = "", risk = "", impact = "";
+    if (item && typeof item === "object") {
+      no = clean((item as any).project_no);
+      risk = clean((item as any).risk);
+      impact = clean((item as any).impact);
+    } else if (typeof item === "string") {
+      const parts = item.split(/\s+[—–-]\s+/);
+      no = clean(parts[0]);
+      risk = clean(parts[1]);
+      impact = clean(parts.slice(2).join(" — "));
+    }
+    if (!risk) continue;
+    if (known.length && !knownSet.has(no)) flags.push(`AI_TOP_RISK_UNKNOWN_PROJECT: "${no || "?"}"`);
+    if (!impact) flags.push(`AI_TOP_RISK_NO_IMPACT: ${no || "?"}`);
+    else if (!/\d/.test(impact)) flags.push(`AI_TOP_RISK_UNQUANTIFIED: ${no || "?"}`);
+    risks.push([no || PORTFOLIO_KEY, risk, impact || "impact not stated"].join(" — "));
+  }
+  if (raw.length > 3) flags.push(`AI_SCHEMA: top_risks had ${raw.length} items, kept 3`);
+  return { risks, flags };
 }
 
 function normalizeInsight(
@@ -460,24 +594,44 @@ function normalizeInsight(
     schedule_basis: scheduleBasis,
   };
   if (Array.isArray(raw?.systemic_issues)) forecast.systemic_issues = raw.systemic_issues;
-  if (Array.isArray(raw?.top_risks)) forecast.top_risks = raw.top_risks;
+
+  let topRiskFlags: string[] = [];
+  if (raw?.top_risks !== undefined) {
+    const tr = normalizeTopRisks(raw.top_risks, policy.knownProjects ?? []);
+    forecast.top_risks = tr.risks;
+    topRiskFlags = tr.flags;
+  }
 
   const narrative = [
     headline, summary, JSON.stringify(rootCauses), String(forecast.comment ?? ""),
     JSON.stringify(forecast.top_risks ?? []),
   ].join(" ");
   const unverified = unverifiedNumbers(narrative, sourceNums);
+  const badQty = unverifiedQuantities(narrative, sourceNums);
 
   const validationFlags: string[] = [];
   if (unverified.length) {
     confidence = "low";
     validationFlags.push(`AI_UNVERIFIED_NUMBERS: ${unverified.join(", ")} — verify before approving`);
   }
+  if (badQty.length) {
+    confidence = "low";
+    validationFlags.push(`AI_UNVERIFIED_QUANTITIES: ${badQty.join(", ")} — not found in source data, verify before approving`);
+  }
+  if (policy.lang) {
+    const r = arabicRatio(`${headline} ${summary}`);
+    if (policy.lang === "en" && r > 0.2) {
+      validationFlags.push(`AI_WRONG_LANGUAGE: requested English but ${Math.round(r * 100)}% of the text is Arabic — reject and re-run`);
+    } else if (policy.lang === "ar" && r < 0.4) {
+      validationFlags.push(`AI_WRONG_LANGUAGE: requested Arabic but text is mostly English — reject and re-run`);
+    }
+  }
   const contradiction = cpiContradiction(`${headline} ${summary}`, policy.cpi);
   if (contradiction) {
     confidence = "low";
     validationFlags.push(contradiction);
   }
+  validationFlags.push(...topRiskFlags);
   validationFlags.push(...issues.map((i) => `AI_SCHEMA: ${i}`));
 
   const aiFlags = Array.isArray(raw?.data_quality_flags) ? raw.data_quality_flags.map(String) : [];
@@ -649,7 +803,7 @@ async function processBatch(admin: SupabaseClient, cfg: LlmConfig, run: any): Pr
 
     const no = String(p.project.project_no);
     const compact = compactProject(p);
-    const userMsg = `As-of date: ${payload.as_of}\nProject data (JSON):\n${JSON.stringify(compact)}`;
+    const userMsg = `${langReminder(lang)}\nAs-of date: ${payload.as_of}\nProject data (JSON):\n${JSON.stringify(compact)}`;
     const est = estimateTokens(projectSystem + userMsg) + 1800;
     const flags: string[] = Array.isArray(p.data_quality_flags) ? p.data_quality_flags : [];
     const policy: Policy = {
@@ -662,7 +816,7 @@ async function processBatch(admin: SupabaseClient, cfg: LlmConfig, run: any): Pr
     try {
       const { args, usage: u } = await callLLM(cfg, projectSystem, userMsg, PROJECT_TOOL, gate, est);
       usage.input += u.input; usage.output += u.output;
-      row = { ...normalizeInsight(args, flags, collectNumbers(compact), no, policy), raw_response: args };
+      row = { ...normalizeInsight(args, flags, collectNumbers(compact), no, { ...policy, lang }), raw_response: args };
       batchLog.push(`${no}: ok (${policy.rag ?? "?"})`);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
@@ -709,8 +863,11 @@ async function processBatch(admin: SupabaseClient, cfg: LlmConfig, run: any): Pr
         cpi_calc: r.input_snapshot?.computed?.cpi_calc,
         spi_calc: r.input_snapshot?.computed?.spi_calc,
         spi_time_proxy: r.input_snapshot?.computed?.spi_time_proxy,
+        eac_cpi: r.input_snapshot?.computed?.eac_cpi,
+        bac: r.input_snapshot?.project?.bac,
         flags: (r.data_quality_flags ?? []).filter((f: string) => /^[A-Z_]+:/.test(f) && !f.startsWith("AI_")),
       }));
+      const knownNos = assessments.map((a: any) => String(a.project_no ?? "")).filter(Boolean);
       const portfolioRag = portfolioPolicyRag(projDone.map((r: any) => r.rag));
       const portfolioInput = {
         as_of: payload.as_of,
@@ -720,20 +877,21 @@ async function processBatch(admin: SupabaseClient, cfg: LlmConfig, run: any): Pr
         portfolio: payload.portfolio,
         assessments,
       };
-      const userMsg = `Portfolio data (JSON):\n${JSON.stringify(portfolioInput)}`;
+      const userMsg = `${langReminder(lang)}\nPortfolio data (JSON):\n${JSON.stringify(portfolioInput)}`;
       const system = `${baseRules(lang)}\n\n${PORTFOLIO_TASK}`;
       const policy: Policy = {
         rag: portfolioRag,
         cpi: payload?.portfolio?.cpi_weighted == null ? null : Number(payload.portfolio.cpi_weighted),
+        knownProjects: knownNos,
       };
 
       let row: Record<string, unknown>;
       try {
-        const { args, usage: u } = await callLLM(cfg, system, userMsg, PORTFOLIO_TOOL, gate,
+        const { args, usage: u } = await callLLM(cfg, system, userMsg, portfolioTool(knownNos), gate,
           estimateTokens(system + userMsg) + 1800);
         usage.input += u.input; usage.output += u.output;
         totals.tokens_in += u.input; totals.tokens_out += u.output;
-        row = { ...normalizeInsight(args, [], collectNumbers(portfolioInput), "portfolio", policy), raw_response: args };
+        row = { ...normalizeInsight(args, [], collectNumbers(portfolioInput), "portfolio", { ...policy, lang }), raw_response: args };
       } catch (e) {
         row = { ...failureInsight([], e instanceof Error ? e.message : String(e), policy), raw_response: null };
       }
