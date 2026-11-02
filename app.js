@@ -2427,7 +2427,7 @@ async function openMRVFromPO(poId,poNo){
     <div class="form-field"><label>MRV No</label><input id="mrv-no" value="${newMRVNo}" readonly style="font-family:monospace;opacity:.7"/></div>
     <div class="form-field"><label>Received Date *</label><input id="mrv-date" type="date" value="${new Date().toISOString().split('T')[0]}"/></div>
   </div>
-  <div class="form-field"><label>Received By *</label><input id="mrv-by" placeholder="Name of person who received goods"/></div>
+  <div class="form-field"><label>Received By *</label><input id="mrv-by" value="${esc(currentProfile?.full_name||'')}" placeholder="Name of person who received goods"/></div>
   <div class="form-row">
     <div class="form-field"><label>Condition *</label>
       <select id="mrv-condition">
@@ -3642,7 +3642,7 @@ function openNewRiskModal(){
   `);
 }
 
-async function saveRisk(e){
+async function saveRiskRegisterItem(e){
   const btn=e?.target;if(btn){btn.disabled=true;btn.textContent='Saving...';}
   try{
     const projId=document.getElementById('risk-proj').value;
@@ -4643,7 +4643,7 @@ async function sendAllEmail(emailList){
   showToast('Email client opened with '+emailList.length+' recipients');
 }
 
-async function sendEmailNotification(type){
+async function _coreSendEmailNotification(type){
   const [projR, wfR, usersR] = await Promise.all([
     sb.from('projects').select('name,cpi,spi,status,ev,ac'),
     sb.from('workflow_items').select('ref_no,current_step,status').in('status',['pending','overdue']),
@@ -8506,7 +8506,6 @@ function openEmailDeployModal(){
 
 // ── Additional notification types ─────────────────────────────
 // Extend sendEmailNotification to handle new types
-const _origSendEmailNotification = sendEmailNotification;
 async function sendEmailNotification(type){
   const today = new Date().toLocaleDateString('en-GB',{day:'numeric',month:'long',year:'numeric'});
 
@@ -8549,7 +8548,7 @@ async function sendEmailNotification(type){
   }
 
   // Delegate original types to original function
-  return _origSendEmailNotification(type);
+  return _coreSendEmailNotification(type);
 }
 
 // ── ESC closes Email Center ───────────────────────────────────
@@ -9757,7 +9756,7 @@ async function loadContracts(tab='active'){
       ${list.length===0
         ? '<div class="empty">No contracts found</div>'
         : `<table><thead><tr>
-            <th>Contract No</th><th>Title</th><th>Type</th><th>Party</th><th>Project</th>
+            <th>Contract No</th><th>Title</th><th>Type</th><th>Party</th>
             <th style="text-align:right">Value (KWD)</th><th>Start</th><th>End</th>
             <th style="text-align:center">Status</th><th></th>
           </tr></thead><tbody>
@@ -9770,7 +9769,6 @@ async function loadContracts(tab='active'){
               <td style="font-weight:600;font-size:11px">${esc(c.title||'—')}</td>
               <td><span style="font-size:9px;background:${c.type==='turnkey'?'#10B98122':'#3B82F622'};color:${c.type==='turnkey'?'#10B981':'#3B82F6'};border-radius:4px;padding:2px 6px">${esc(c.type||'—')}</span></td>
               <td style="font-size:11px">${esc(party)}</td>
-              <td style="font-size:10px;color:var(--muted)">${esc(c.project?.project_no||'—')}</td>
               <td style="text-align:right;font-weight:700">${fmtKWD(c.contract_value||0)}</td>
               <td style="font-size:10px;color:var(--faint)">${esc(c.start_date||'—')}</td>
               <td style="font-size:10px;color:${expiryColor};font-weight:700">${esc(c.end_date||'Open')}${daysLeft!==null&&daysLeft<=30?` <span style="font-size:9px">(${daysLeft<0?Math.abs(daysLeft)+'d ago':daysLeft+'d'})</span>`:''}</td>
@@ -9864,7 +9862,6 @@ async function openContractDetail(id){
         ['Start Date',   c.start_date||'—'],
         ['End Date',     c.end_date||'Open'],
         ['Days Left',    daysLeft!==null?(daysLeft<0?`<span style="color:#EF4444">${Math.abs(daysLeft)}d expired</span>`:daysLeft+'d'):'—'],
-        ['Project',      c.project?.project_no||'—'],
         ['Status',       pill(c.status||'active',c.status==='active'?'#10B981':'#94A3B8')],
         ['Created',      c.created_at?new Date(c.created_at).toLocaleDateString('en-GB'):'—'],
       ].map(([l,v])=>`<div style="background:var(--n3);border-radius:6px;padding:8px 10px">
@@ -15968,7 +15965,7 @@ async function saveRetention(e){
   finally{if(btn){btn.disabled=false;btn.textContent='Save';}}
 }
 
-async function releaseRetention(id){
+async function releaseRetentionRecord(id){
   if(!confirm('Mark retention as released?')) return;
   const {error}=await sb.from('retention_records').update({
     status:'released', released_at:new Date().toISOString(), released_by:currentProfile?.id
@@ -18929,7 +18926,7 @@ const __H = {
   },
   h191: function(event, __a){ saveCAPAAction(event)
   },
-  h192: function(event, __a){ saveRisk(event)
+  h192: function(event, __a){ saveRiskRegisterItem(event)
   },
   h193: function(event, __a){ saveContract(event)
   },
@@ -19371,7 +19368,7 @@ const __H = {
   },
   h412: function(event, __a){ openNewRetentionModal()
   },
-  h413: function(event, __a){ releaseRetention(__a[0])
+  h413: function(event, __a){ releaseRetentionRecord(__a[0])
   },
   h414: function(event, __a){ calcRetAmt()
   },
