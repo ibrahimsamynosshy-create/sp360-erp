@@ -1,4 +1,5 @@
-/* SP360 Integrated Platform — application script (v4.3.1)
+/* SP360 Integrated Platform — application script (v4.3.2)
+ * v4.3.2 — Aligned with database fix_06: workflow, role rules, real column names, Finance KPIs from posted status
  * v4.3.1 — AI Health: half-up rounding in metric tiles (matches AI narrative)
  * v4.3.0 — P14 AI Project Health Review (module appended at end of file; wraps loadAI/loadDashboard/loadCEO)
  * Loaded by index.html as <script src="app.js">. Must stay a classic (non-module) script:
@@ -99,10 +100,10 @@ function roleBadgeColor(role){
 // ── WORKFLOW APPROVAL RULES ──────────────────────────────────
 // Segregation of Duties — each role approves only their step
 const STEP_APPROVERS = {
-  'Dept. Approval':    ['PMO Manager','Procurement Lead'],
+  'Dept. Approval':    ['PMO Manager'],
   'Finance Review':    ['Finance Manager'],
   'GM Approval':       ['PMO Manager'],
-  'PM Verification':   ['PMO Manager'],
+  'PM Verification':   ['PMO Manager','Project Manager'],
   'Finance Approval':  ['Finance Manager']
 };
 
@@ -311,8 +312,8 @@ async function writeAudit(entity_type,entity_id,action,old_val,new_val,notes='',
   try{
     const {error}=await sb.from('audit_log').insert({
       entity_type,entity_id,action,
-      old_values:old_val?JSON.stringify(old_val):null,
-      new_values:new_val?JSON.stringify(new_val):null,
+      old_values:old_val||null,
+      new_values:new_val||null,
       performed_by:currentProfile.id,
       notes
     });
@@ -813,23 +814,16 @@ async function doLogout(){
 }
 
 async function loadWfBadge(){
-  // Update notification bell in header
-  try{
-    const {data:pending}=await sb.from('workflow_items')
-      .select('id',{count:'exact'})
-      .in('status',['pending','overdue'])
-      .limit(1);
-    const count=pending?.length||0;
-    const bell=document.getElementById('notif-bell');
-    const countEl=document.getElementById('notif-count');
-    if(bell&&countEl){
-      countEl.textContent=count;
-      bell.style.display=count>0?'inline-block':'none';
-    }
-  }catch{}
-  // Also update page title with pending count for awareness
-  const {data}=await sb.from('workflow_items').select('id').in('status',['pending','overdue']);
-  const count=(data||[]).length;
+  // Header and sidebar counts show only what the signed-in role can act on
+  const {data}=await sb.from('workflow_items').select('id,current_step').in('status',['pending','overdue']);
+  const role=currentProfile?.role||'';
+  const count=(data||[]).filter(w=>(STEP_APPROVERS[w.current_step]||[]).includes(role)).length;
+  const bell=document.getElementById('notif-bell');
+  const countEl=document.getElementById('notif-count');
+  if(bell&&countEl){
+    countEl.textContent=count;
+    bell.style.display=count>0?'inline-block':'none';
+  }
   document.getElementById('pending-badge').textContent=`⚡ ${count} pending`;
   const badge=document.getElementById('wf-badge');
   badge.style.display=count>0?'':'none';
@@ -1126,7 +1120,7 @@ async function loadDashboard(){
         const cpiV=Number(p.cpi)||1;
         const eac=cpiV>0?ac+(bac-ev)/cpiV:bac;
         const rv=ragScore(p);
-        const rag=rv>=1?'🟢':rv>=0.9?'🟡':'🔴';
+        const rag=p.spi==null?'⚪':rv>=1?'🟢':rv>=0.9?'🟡':'🔴';
         const wrem=bac-ev, budgRem=bac-ac;
         const tcpiNum=wrem>0&&budgRem>0?wrem/budgRem:null;
         const tcpi=tcpiNum!==null?tcpiNum.toFixed(2):'—';
@@ -1655,11 +1649,11 @@ async function loadProjects(tab){
         <td style="text-align:right;font-size:11px">${fmtKWD(r.baseline_bac||0)}</td>
         <td style="text-align:right;font-size:11px;font-weight:700">${fmtKWD(r.current_bac||0)}</td>
         <td style="text-align:right;font-size:11px;font-weight:700;color:${bv>0?'#EF4444':bv<0?'#10B981':'#94A3B8'}">${bv>0?'+':''}${fmtKWD(bv)}<div style="font-size:9px;color:var(--muted)">${esc(r.bac_variance_pct||0)}%</div></td>
-        <td style="text-align:center;font-weight:800;color:${cpiColor(spi)}">${spi.toFixed(3)}</td>
+        <td style="text-align:center;font-weight:800;color:${r.spi==null?'#94A3B8':cpiColor(spi)}">${r.spi==null?'N/A':spi.toFixed(3)}</td>
         <td style="text-align:center;font-weight:800;color:${cpiColor(cpi)}">${cpi.toFixed(3)}</td>
         <td style="text-align:right;font-size:11px;color:${sv>=0?'#10B981':'#EF4444'};font-weight:700">${sv>=0?'+':''}${fmtKWD(sv)}</td>
         <td style="text-align:right;font-size:11px;color:${cv>=0?'#10B981':'#EF4444'};font-weight:700">${cv>=0?'+':''}${fmtKWD(cv)}</td>
-        <td style="text-align:center;font-weight:700">${esc(r.progress_pct||0)}%</td>
+        <td style="text-align:center;font-weight:700">${esc(r.pct??r.progress_pct??0)}%</td>
       </tr>`;
     }).join('')}
     </tbody></table>`;
@@ -1928,7 +1922,7 @@ async function loadProjects(tab){
     ${projs.filter(p=>p.status!=='completed').map(p=>{
       const eac=Number(p.cpi)>0?Number(p.ac)+(Number(p.bac)-Number(p.ev))/Number(p.cpi):Number(p.bac);
       const ragVal=ragScore(p);
-      const rag=ragVal>=1?'🟢':ragVal>=0.9?'🟡':'🔴';
+      const rag=p.spi==null?'⚪':ragVal>=1?'🟢':ragVal>=0.9?'🟡':'🔴';
       const pvPct=Number(p.pv)>0?Math.round(Number(p.pv)/Number(p.bac)*100):0;
       return`<tr>
         <td><div style="font-weight:600;font-size:11px">${esc(p.name.split('—')[0].trim())}</div><div style="color:var(--gold);font-size:9px">${esc(p.project_no)}</div></td>
@@ -2037,10 +2031,7 @@ async function saveProgress(e, projId, bac){
     } else if(evMethod==='milestone'){
       // Milestone EV: sum of approved milestone EVs stored on the project
       // Falls back to pct-based until milestone_ev field is populated
-      const {data:msData}=await sb.from('projects').select('milestone_ev').eq('id',projId).single().catch(()=>({data:null}));
-      ev = (msData&&msData.milestone_ev!=null)
-           ? Math.round(Number(msData.milestone_ev)*1000)/1000
-           : Math.round(bac*pct/100*1000)/1000;
+      ev = Math.round(bac*pct/100*1000)/1000;
     } else {
       // Percent Complete (default): EV = BAC × %
       ev = Math.round(bac*pct/100*1000)/1000;
@@ -2197,8 +2188,9 @@ async function loadProc(tab='vendors'){
     kpis=kpi('Total POs',L.length,'#E2E8F0')+kpi('Pending Approval',pending.length,'#F97316')+kpi('Issued',L.filter(p=>p.status==='issued').length,'#10B981')+kpi('Total Value',fmtKWD(L.reduce((s,p)=>s+Number(p.total_value),0)),'#C9A84C');
     body=`<table><thead><tr><th>No</th><th>Project</th><th>Vendor</th><th>Description</th><th style="text-align:right">Value (KWD)</th><th>Date</th><th style="text-align:center">Status</th><th style="text-align:center">Action</th></tr></thead><tbody>
     ${L.map(p=>{
-      const canSubmit=p.status==='draft'&&(currentProfile?.role==='PMO Manager'||currentProfile?.role==='Procurement Lead');
-      const canReceive=p.status==='issued'&&(currentProfile?.role==='PMO Manager'||currentProfile?.role==='Procurement Lead');
+      const canSubmit=p.status==='draft'&&currentProfile?.role==='Procurement Lead';
+      const canIssue=p.status==='approved'&&currentProfile?.role==='Procurement Lead';
+      const canReceive=['issued','partial_receipt'].includes(p.status)&&['Procurement Lead','Project Manager'].includes(currentProfile?.role);
       // 3-way match indicator: check if MRV and invoice exist for this PO
       return`<tr>
         <td style="color:var(--gold);font-size:10px;white-space:nowrap">${esc(p.po_no)}</td>
@@ -2210,6 +2202,7 @@ async function loadProc(tab='vendors'){
         <td style="text-align:center">${pill(p.status)}</td>
         <td style="text-align:center;white-space:nowrap">
           ${canSubmit?`<button class="btn btn-primary btn-sm" style="font-size:10px;padding:3px 8px" data-h-click="h130" data-ha-click="${esc(JSON.stringify([String((p.id)??'')]))}">Submit ▶</button>`:''}
+          ${canIssue?`<button class="btn btn-primary btn-sm" style="font-size:10px;padding:3px 8px" data-h-click="h901" data-ha-click="${esc(JSON.stringify([String((p.id)??''),String((p.po_no)??'')]))}">Issue ▶</button>`:''}
           ${canReceive?`<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:3px 8px" data-h-click="h131" data-ha-click="${esc(JSON.stringify([String((p.id)??''),String((p.po_no)??'')]))}">Receive ✓</button>`:''}
         </td>
       </tr>`;
@@ -2379,6 +2372,21 @@ async function awardRFQ(rfqId,rfqNo,projectId){
   finally{if(btn){btn.disabled=false;btn.textContent='Award & Create PO';}}
 }
 
+async function issuePurchaseOrder(e,poId,poNo){
+  if(!confirm('Issue '+poNo+' to the vendor?')) return;
+  const btn=e?.target; if(btn){btn.disabled=true;btn.textContent='Issuing…';}
+  try{
+    const {data,error}=await sb.from('purchase_orders').update({status:'issued',updated_at:new Date().toISOString()})
+      .eq('id',poId).eq('status','approved').select('id');
+    if(error){showToast('Error: '+error.message,'error');return;}
+    if(!data||!data.length){showToast('PO was not issued. Check its status and your role.','error');return;}
+    await writeAudit('purchase_orders',poId,'ISSUED',{status:'approved'},{status:'issued'},'PO issued');
+    showToast(poNo+' issued ✓');
+    loadProc('pos');
+  }catch(err){showToast('Error: '+err.message,'error');}
+  finally{if(btn){btn.disabled=false;btn.textContent='Issue ▶';}}
+}
+
 async function openMRVFromPO(poId,poNo){
   const {data:po}=await sb.from('purchase_orders').select('*,vendor:vendors(name),project:projects(project_no)').eq('id',poId).single();
   const newMRVNo=await nextRefNo('MRV');
@@ -2427,31 +2435,10 @@ async function saveMRV(poId,projectId){
       p_received_date:date, p_received_by:by,
       p_condition:cond, p_received_value:val||null,
       p_notes:notes||null, p_created_by:currentProfile?.id
-    }).select().single().catch(()=>({data:null,error:{message:'RPC not available'}}));
+    }).select().single();
 
-    if(rpcErr){
-      // Fallback: manual two-step with explicit rollback attempt on PO failure
-      const {data,error}=await sb.from('mrvs').insert({
-        mrv_no:mrvNo, po_id:poId, project_id:projectId,
-        received_date:date, received_by:by,
-        condition:cond, received_value:val||null,
-        notes:notes||null, created_by:currentProfile?.id
-      }).select().single();
-      if(error){showToast('Error: '+error.message,'error');return;}
-      if(cond!=='rejected'){
-        const newPoStatus=cond==='good'?'received':'partial_receipt';
-        const {error:poErr}=await sb.from('purchase_orders').update({status:newPoStatus}).eq('id',poId);
-        if(poErr){
-          // Compensating rollback — delete the MRV we just inserted to avoid inconsistency
-          await sb.from('mrvs').delete().eq('id',data.id);
-          showToast('MRV save failed — PO update error. No changes made. '+poErr.message,'error');
-          return;
-        }
-      }
-      await writeAudit('mrvs',data.id,'CREATED',null,{mrv_no:mrvNo,condition:cond,po_id:poId},'MRV recorded');
-    } else {
+    if(rpcErr){showToast('Error: '+rpcErr.message,'error');return;}
       await writeAudit('mrvs',rpcData?.id||null,'CREATED',null,{mrv_no:mrvNo,condition:cond,po_id:poId},'MRV recorded (atomic RPC)');
-    }
     showToast(`MRV ${mrvNo} saved ✓`);
     closeModal(); loadProc('mrvs');
   }catch(e){showToast('Error: '+e.message,'error');}
@@ -2499,7 +2486,7 @@ async function saveRFQ(e){
     const {data,error}=await sb.from('rfqs').insert({
       rfq_no:rfqNo, title, project_id:projId,
       close_date:close, budget:budget||null,
-      category:cat||null, scope_of_work:scope||null,
+      scope_of_work:[cat,scope].filter(Boolean).join(' — ')||null,
       status:'submitted', created_by:currentProfile?.id
     }).select().single();
     if(error){showToast('Error: '+error.message,'error');return;}
@@ -2580,9 +2567,9 @@ async function loadFinance(tab='overview'){
   const curMonth=new Date().toISOString().slice(0,7);
 
   const clientPaid   =ALL.filter(i=>i.invoice_type==='client'&&i.status==='paid');
-  const clientPend   =ALL.filter(i=>i.invoice_type==='client'&&!['paid','cancelled'].includes(i.status));
+  const clientPend   =ALL.filter(i=>i.invoice_type==='client'&&i.status==='approved');
   const supplierPaid =ALL.filter(i=>i.invoice_type!=='client'&&i.status==='paid');
-  const supplierPend =ALL.filter(i=>i.invoice_type!=='client'&&!['paid','cancelled'].includes(i.status));
+  const supplierPend =ALL.filter(i=>i.invoice_type!=='client'&&i.status==='approved');
 
   const totalRevenue  =clientPaid.reduce((s,i)=>s+Number(i.net_amount),0);
   const totalCost     =supplierPaid.reduce((s,i)=>s+Number(i.net_amount),0);
@@ -2590,8 +2577,8 @@ async function loadFinance(tab='overview'){
   const apOutstanding =supplierPend.reduce((s,i)=>s+Number(i.net_amount),0);
   const grossProfit   =totalRevenue-totalCost;
   const margin        =totalRevenue>0?(grossProfit/totalRevenue*100):0;
-  const retentionHeld =ALL.filter(i=>i.invoice_type==='client'&&Number(i.retention_pct)>0)
-    .reduce((s,i)=>s+Number(i.gross_amount)*Number(i.retention_pct)/100,0);
+  const retentionHeld =ALL.filter(i=>i.invoice_type==='client'&&['approved','paid'].includes(i.status)&&!i.retention_released)
+    .reduce((s,i)=>s+Number(i.retention_amt||0),0);
   const overdueAR=clientPend.filter(i=>i.due_date&&new Date(i.due_date)<today);
 
   const tabs=`<div class="tabs">
@@ -2609,12 +2596,12 @@ async function loadFinance(tab='overview'){
       ${kpi('Revenue Collected',fmtKWD(totalRevenue),'#10B981','Client invoices paid')}
       ${kpi('AR Outstanding',fmtKWD(arOutstanding),overdueAR.length>0?'#EF4444':'#F97316',overdueAR.length>0?'⚠️ '+overdueAR.length+' overdue':'Pending collection')}
       ${kpi('Cost Paid',fmtKWD(totalCost),'#EF4444','Supplier invoices paid')}
-      ${kpi('Gross Profit',fmtKWD(grossProfit),grossProfit>=0?'#C9A84C':'#EF4444',margin.toFixed(1)+'% of collected revenue')}
+      ${kpi('Cash Margin',fmtKWD(grossProfit),grossProfit>=0?'#C9A84C':'#EF4444',margin.toFixed(1)+'% of collected. Profit is in P&L')}
     </div>
     <div class="grid4" style="margin-bottom:14px">
       ${kpi('AP Outstanding',fmtKWD(apOutstanding),'#8B5CF6','Supplier bills due')}
       ${kpi('Retention Held',fmtKWD(retentionHeld),'#3B82F6','Client retention')}
-      ${kpi('Net Cash',fmtKWD(totalRevenue-totalCost-apOutstanding),totalRevenue-totalCost-apOutstanding>=0?'#10B981':'#EF4444','Collected minus paid')}
+      ${kpi('Net Cash',fmtKWD(totalRevenue-totalCost),totalRevenue-totalCost>=0?'#10B981':'#EF4444','Collected minus paid')}
       ${kpi('This Month',ALL.filter(i=>i.created_at?.startsWith(curMonth)).length,'#E2E8F0','Invoices created')}
     </div>
     <table><thead><tr>
@@ -2624,8 +2611,8 @@ async function loadFinance(tab='overview'){
     </tr></thead><tbody>
     ${ALL.slice(0,20).map(i=>{
       const ov=i.due_date&&new Date(i.due_date)<today&&i.status!=='paid';
-      const canSubmit=i.status==='draft';
-      const canPaid=i.status==='approved'&&(currentProfile?.role==='PMO Manager'||currentProfile?.role==='Finance Manager');
+      const canSubmit=i.status==='draft'&&currentProfile?.role==='Finance Manager';
+      const canPaid=i.status==='approved'&&currentProfile?.role==='Finance Manager';
       return`<tr>
         <td style="color:var(--gold);font-size:10px;white-space:nowrap">${esc(i.invoice_no)}</td>
         <td style="color:var(--muted);font-size:11px">${esc(i.project?.project_no||'—')}</td>
@@ -2678,7 +2665,7 @@ async function loadFinance(tab='overview'){
     ${ar.map(i=>{
       const days=i.due_date&&!['paid','cancelled'].includes(i.status)?Math.floor((today-new Date(i.due_date))/86400000):null;
       const ov=days!==null&&days>0;
-      const canPaid=i.status==='approved'&&(currentProfile?.role==='PMO Manager'||currentProfile?.role==='Finance Manager');
+      const canPaid=i.status==='approved'&&currentProfile?.role==='Finance Manager';
       return`<tr>
         <td style="color:var(--gold);font-size:10px">${esc(i.invoice_no)}</td>
         <td style="font-size:11px;color:var(--muted)">${esc(i.project?.project_no||'—')}</td>
@@ -2715,7 +2702,7 @@ async function loadFinance(tab='overview'){
     ${ap.map(i=>{
       const days=i.due_date&&!['paid','cancelled'].includes(i.status)?Math.floor((today-new Date(i.due_date))/86400000):null;
       const ov=days!==null&&days>0;
-      const canPay=i.status==='approved'&&(currentProfile?.role==='PMO Manager'||currentProfile?.role==='Finance Manager');
+      const canPay=i.status==='approved'&&currentProfile?.role==='Finance Manager';
       return`<tr>
         <td style="color:var(--gold);font-size:10px">${esc(i.invoice_no)}</td>
         <td style="font-size:11px;color:var(--muted)">${esc(i.project?.project_no||'—')}</td>
@@ -2860,11 +2847,15 @@ async function loadFinance(tab='overview'){
     </tr>`).join('')}</tbody></table>`;
 
   } else if(tab==='trial'){
-    const {data:list}=await sb.from('v_trial_balance').select('*').order('account_code');
+    const {data:list,error:trialErr}=await sb.from('v_trial_balance').select('*').order('account_code');
     const L=list||[];
     const totalDr=L.reduce((s,r)=>s+Number(r.total_debit||0),0);
     const totalCr=L.reduce((s,r)=>s+Number(r.total_credit||0),0);
     const balanced=Math.abs(totalDr-totalCr)<0.01;
+    if(trialErr||totalDr===0){
+      kpis='';
+      body=`<div class="empty">${trialErr?'Could not load Trial Balance: '+esc(trialErr.message):'No posted journal entries yet'}</div>`;
+    } else {
     kpis=kpi('Accounts',L.length,'#E2E8F0')+kpi('Total Debit',fmtKWD(totalDr),'#3B82F6')+kpi('Total Credit',fmtKWD(totalCr),'#EF4444')+kpi('Balanced',balanced?'✅ Yes':'❌ No',balanced?'#10B981':'#EF4444');
     body=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;flex-wrap:wrap">
       <div style="padding:8px 12px;background:${balanced?'#10B98122':'#EF444422'};border:1px solid ${balanced?'#10B98144':'#EF444444'};border-radius:6px;font-size:12px;font-weight:700;color:${balanced?'#10B981':'#EF4444'}">${balanced?'✅ Trial Balance is balanced':'❌ Trial Balance is NOT balanced — check journal entries'}</div>
@@ -2879,9 +2870,11 @@ async function loadFinance(tab='overview'){
       <td style="text-align:right;color:#EF4444">${fmtKWD(r.total_credit||0)}</td>
       <td style="text-align:right;font-weight:700;color:${bal>=0?'#10B981':'#EF4444'}">${fmtKWD(Math.abs(bal))}</td>
     </tr>`;}).join('')}</tbody></table>`;
+    }
 
   } else if(tab==='pl'){
-    const {data:plData}=await sb.from('v_income_statement').select('*');
+    const {data:plData,error:plErr}=await sb.from('v_income_statement').select('*');
+    if(plErr) showToast('Could not load P&L: '+plErr.message,'error');
     const PL=plData?.[0]||{};
     const rev=Number(PL.total_revenue||0),cogs=Number(PL.total_cogs||0),exp=Number(PL.total_expenses||0);
     const gp=rev-cogs,np=gp-exp;
@@ -4004,7 +3997,12 @@ async function loadWorkflow(){
   const el=document.getElementById('page-workflow');
   try{
   el.innerHTML=`<div class="loading">Loading…</div>`;
-  const {data:list}=await sb.from('workflow_items').select('*').order('raised_date',{ascending:true});
+  const [{data:list,error:wfErr},{data:wfUsers}]=await Promise.all([
+    sb.from('workflow_items').select('*').order('raised_date',{ascending:true}),
+    sb.from('user_profiles').select('id,full_name')
+  ]);
+  if(wfErr) throw wfErr;
+  const wfUserName=id=>(wfUsers||[]).find(u=>u.id===id)?.full_name||'—';
   const wfs=list||[];
   const pending=wfs.filter(w=>w.status==='pending'||w.status==='overdue');
   const ov=wfs.filter(w=>w.status==='overdue').length;
@@ -4013,7 +4011,7 @@ async function loadWorkflow(){
   el.innerHTML=`
   <div class="page-head"><div class="page-head-left"><span style="font-size:22px">⚡</span><div><h1>Workflow & Approvals</h1><div class="sub">Pending Actions · SLA · Approval Queue</div></div></div></div>
   <div class="grid4">
-    ${kpi('Total Pending',pending.length,'#8B5CF6')}
+    ${kpi('Total Pending',pending.length,'#8B5CF6',pending.filter(w=>(STEP_APPROVERS[w.current_step]||[]).includes(role)).length+' awaiting your action')}
     ${kpi('SLA Breaches',ov,ov>0?'#EF4444':'#10B981',ov>0?'Immediate action':'All within SLA')}
     ${kpi('PO Approvals',pending.filter(w=>w.entity_type==='po').length,'#3B82F6')}
     ${kpi('Invoice Approvals',pending.filter(w=>w.entity_type==='invoice').length,'#C9A84C')}
@@ -4028,7 +4026,7 @@ async function loadWorkflow(){
         <td style="color:var(--gold);font-weight:700">${esc(w.ref_no)}</td>
         <td style="color:var(--muted);font-size:11px">${w.entity_type==='po'?'Purchase Order':'Invoice'}</td>
         <td style="font-weight:600;font-size:11px">${esc(w.current_step)}</td>
-        <td style="color:var(--muted);font-size:11px">${esc(w.raised_by||'—')}</td>
+        <td style="color:var(--muted);font-size:11px">${esc(wfUserName(w.raised_by))}</td>
         <td style="color:${w.status==='overdue'?'#EF4444':'#94A3B8'};font-size:11px">${new Date(w.raised_date).toLocaleDateString('en-GB')}</td>
         <td style="text-align:center">${pill(w.status)}</td>
         <td style="text-align:center">
@@ -4041,7 +4039,7 @@ async function loadWorkflow(){
     </tbody></table>`}
   </div>
   <div class="grid2">
-    ${[['PO Approval Workflow',['Dept. Approval','Finance Review','GM Approval','Issued']],['Invoice Approval Workflow',['PM Verification','Finance Approval','Completed']]].map(([name,steps])=>`
+    ${[['PO Approval Workflow',['Dept. Approval','Finance Review (by value)','Approved','Issued']],['Invoice Approval Workflow',['PM Verification','Finance Approval','Approved']]].map(([name,steps])=>`
     <div class="card">
       <div class="sec-head"><div class="sec-title"><span>🗺</span>${name}</div></div>
       <div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:8px 0">
@@ -4882,11 +4880,9 @@ async function saveCO(){
   // FIX: Use .select().single() to get back the inserted CO id for Audit Trail
   // FIX: Unified state — single status='draft' replacing dual status/workflow_status mismatch
   const {data:coData,error}=await sb.from('change_orders').insert({
-    co_no,co_number:co_no,project_id:proj,
+    co_no,project_id:proj,
     co_type:document.getElementById('f-cotype').value,
     description:desc,amount:amt,
-    cost_impact:amt,schedule_impact:0,
-    title:desc,
     justification:document.getElementById('f-cojust').value||null,
     submitted_date:date,
     status:'draft',
@@ -4941,10 +4937,10 @@ async function loadCEO(){
   // Finance — AR/AP/Cash Flow/Retention
   const rev=invs.filter(i=>i.invoice_type==='client'&&i.status==='paid').reduce((s,i)=>s+Number(i.net_amount),0);
   const cost=invs.filter(i=>i.invoice_type!=='client'&&i.status==='paid').reduce((s,i)=>s+Number(i.net_amount),0);
-  const arOutstanding=invs.filter(i=>i.invoice_type==='client'&&!['paid','cancelled'].includes(i.status)).reduce((s,i)=>s+Number(i.net_amount),0);
-  const apOutstanding=invs.filter(i=>i.invoice_type!=='client'&&!['paid','cancelled'].includes(i.status)).reduce((s,i)=>s+Number(i.net_amount),0);
+  const arOutstanding=invs.filter(i=>i.invoice_type==='client'&&i.status==='approved').reduce((s,i)=>s+Number(i.net_amount),0);
+  const apOutstanding=invs.filter(i=>i.invoice_type!=='client'&&i.status==='approved').reduce((s,i)=>s+Number(i.net_amount),0);
   const outstanding=arOutstanding+apOutstanding;
-  const retentionHeld=invs.filter(i=>i.invoice_type==='client'&&Number(i.retention_pct)>0&&i.status!=='cancelled').reduce((s,i)=>s+Number(i.gross_amount)*Number(i.retention_pct)/100,0);
+  const retentionHeld=invs.filter(i=>i.invoice_type==='client'&&['approved','paid'].includes(i.status)).reduce((s,i)=>s+Number(i.retention_amt||0),0);
   const retentionReleased=invs.filter(i=>i.retention_released).reduce((s,i)=>s+Number(i.gross_amount)*Number(i.retention_pct)/100,0);
   const overdueAR=invs.filter(i=>i.invoice_type==='client'&&!['paid','cancelled'].includes(i.status)&&i.due_date&&new Date(i.due_date)<today);
   const gp=rev-cost;
@@ -5122,7 +5118,7 @@ async function loadCEO(){
       const spi=Number(p.pv)>0?Number(p.ev)/Number(p.pv):null;
       const cv=Number(p.ev)-Number(p.ac);
       const ragVal=Math.min(cpi, spi??cpi);
-      const rag=ragVal>=1?'🟢':ragVal>=0.9?'🟡':'🔴';
+      const rag=p.spi==null?'⚪':ragVal>=1?'🟢':ragVal>=0.9?'🟡':'🔴';
       return`<tr>
         <td style="font-weight:600;font-size:11px">${esc((p.name||'').split('—')[0].trim())}<div style="color:var(--gold);font-size:9px">${esc(p.project_no)}</div></td>
         <td style="text-align:center">${pill(p.status)}</td>
@@ -7054,11 +7050,11 @@ document.addEventListener('keydown',e=>{
 
 // ── ABOUT & CHANGELOG ────────────────────────────────────────
 function openAboutModal(){
-  openModal('SP360 v4.2 — About & Changelog',`
+  openModal('SP360 v4.3.2 — About & Changelog',`
   <div style="display:flex;align-items:center;gap:14px;margin-bottom:16px;padding:12px 14px;background:#1E3A5F18;border-radius:8px">
     <div style="width:48px;height:48px;background:var(--gold);border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:900;color:#0D1B2A;font-size:20px;flex-shrink:0">SP</div>
     <div>
-      <div style="font-size:16px;font-weight:800;color:var(--gold)">SP360 v4.2</div>
+      <div style="font-size:16px;font-weight:800;color:var(--gold)">SP360 v4.3.2</div>
       <div style="font-size:11px;color:var(--muted)">Smart Projects 360 · Kuwait · Production System</div>
       <div style="font-size:10px;color:var(--faint);margin-top:2px">Supabase · GitHub Pages · PWA · index.html + app.js (strict CSP)</div>
     </div>
@@ -7098,7 +7094,7 @@ function openAboutModal(){
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:12px">
     ${[
-      ['Version','v4.2 (Navigation · Security & Data Integrity)'],
+      ['Version','v4.3.2 (Navigation · Security & Data Integrity)'],
       ['Database','Supabase (PostgreSQL)'],
       ['Schema','Verify with sp360_schema_check.sql'],
       ['Security','MFA (aal2) + RLS + role gates + DB audit'],
@@ -8204,7 +8200,7 @@ async function biWorkflowStatus(){
 
 async function biQHSEHR(){
   const [{data:ncrs},{data:emps}] = await Promise.all([
-    sb.from('ncrs').select('id,ncr_no,severity,status,department,created_at'),
+    sb.from('ncrs').select('id,ncr_no,severity,status,created_at'),
     sb.from('employees').select('id,department,status,employment_type')
   ]);
   const N=ncrs||[], E=emps||[];
@@ -8415,8 +8411,8 @@ async function loadEmailHistory(){
   if(!el) return;
   try{
     const {data} = await sb.from('audit_log')
-      .select('created_at,action,new_data,performed_by')
-      .eq('table_name','email_notifications')
+      .select('created_at,action,new_data:new_values,performed_by')
+      .eq('entity_type','email_notifications')
       .order('created_at',{ascending:false})
       .limit(10);
     if(!data||data.length===0){ el.innerHTML='<div style="color:var(--faint);font-style:italic">No emails sent yet</div>'; return; }
@@ -8488,7 +8484,7 @@ async function sendEmailNotification(type){
   // New types added in P3-3
   if(type==='overdue_invoices'){
     const [{data:invs},{data:users}] = await Promise.all([
-      sb.from('invoices').select('invoice_no,net_amount,due_date,client').eq('invoice_type','client').neq('status','paid').neq('status','cancelled'),
+      sb.from('invoices').select('invoice_no,net_amount,due_date').eq('invoice_type','client').neq('status','paid').neq('status','cancelled'),
       sb.from('user_profiles').select('email,role').eq('is_active',true)
     ]);
     const overdue=(invs||[]).filter(i=>i.due_date&&new Date(i.due_date)<new Date());
@@ -8507,7 +8503,7 @@ async function sendEmailNotification(type){
 
   if(type==='ncr_alert'){
     const [{data:ncrs},{data:users}] = await Promise.all([
-      sb.from('ncrs').select('ncr_no,severity,department,description').eq('status','open').eq('severity','critical'),
+      sb.from('ncrs').select('ncr_no,severity,description:title').eq('status','open').eq('severity','critical'),
       sb.from('user_profiles').select('email,role').eq('is_active',true)
     ]);
     const recipients=(users||[]).filter(u=>['QHSE Engineer','PMO Manager','Admin'].includes(u.role)).map(u=>u.email).filter(Boolean);
@@ -8544,11 +8540,11 @@ async function loadSystem(){
     const today = new Date();
     const [errR, auditR, wfR, projR, invR, userR] = await Promise.all([
       sb.from('error_logs').select('id,severity,module,created_at,error_msg').order('created_at',{ascending:false}).limit(50),
-      sb.from('audit_log').select('id,table_name,action,created_at').order('created_at',{ascending:false}).limit(100),
+      sb.from('audit_log').select('id,table_name:entity_type,action,created_at').order('created_at',{ascending:false}).limit(100),
       sb.from('workflow_items').select('id,status,entity_type').in('status',['pending','overdue']),
       sb.from('projects').select('id,status,cpi,pct').in('status',['planning','execution','monitoring','closeout']),
       sb.from('material_master').select('*').not('reorder_level','is',null),   // FIX: material_items does not exist; stock lives in material_master
-      sb.from('user_profiles').select('id,role,is_active,last_sign_in_at')
+      sb.from('user_profiles').select('id,role,is_active')
     ]);
 
     const errs   = errR.data||[];
@@ -8931,94 +8927,8 @@ async function exportPayslip(runId){
 
 // Auto-post GL entries when invoice status changes
 async function glAutoPost(invoiceId, eventType){
-  try{
-    const {data:inv} = await sb.from('invoices')
-      .select('*,project:projects(name,project_no)')
-      .eq('id',invoiceId).single();
-    if(!inv) return;
-
-    const amount = Number(inv.net_amount)||0;
-    if(amount<=0) return;
-
-    let entries = [];
-    const ref   = inv.invoice_no || inv.id;
-    const desc  = `${inv.invoice_type==='client'?'AR':'AP'} — ${inv.invoice_no} — ${inv.project?.project_no||'N/A'}`;
-    const today = new Date().toISOString().split('T')[0];
-
-    if(eventType==='invoice_created'){
-      if(inv.invoice_type==='client'){
-        // DR Accounts Receivable, CR Revenue
-        entries=[
-          {account_code:'1100',account_name:'Accounts Receivable',debit:amount,credit:0,description:desc},
-          {account_code:'4000',account_name:'Revenue',debit:0,credit:amount,description:desc}
-        ];
-      } else {
-        // DR Expense, CR Accounts Payable
-        entries=[
-          {account_code:'5000',account_name:'Cost of Services',debit:amount,credit:0,description:desc},
-          {account_code:'2100',account_name:'Accounts Payable',debit:0,credit:amount,description:desc}
-        ];
-      }
-    } else if(eventType==='invoice_paid'){
-      if(inv.invoice_type==='client'){
-        // DR Cash/Bank, CR Accounts Receivable
-        entries=[
-          {account_code:'1000',account_name:'Cash & Bank',debit:amount,credit:0,description:'Receipt — '+desc},
-          {account_code:'1100',account_name:'Accounts Receivable',debit:0,credit:amount,description:'Receipt — '+desc}
-        ];
-      } else {
-        // DR Accounts Payable, CR Cash/Bank
-        entries=[
-          {account_code:'2100',account_name:'Accounts Payable',debit:amount,credit:0,description:'Payment — '+desc},
-          {account_code:'1000',account_name:'Cash & Bank',debit:0,credit:amount,description:'Payment — '+desc}
-        ];
-      }
-    }
-
-    if(entries.length===0) return;
-
-    // Get next journal number
-    const jNo=await nextRefNo('JE');
-
-    // Insert journal entry header
-    const {data:je,error:jeErr} = await sb.from('journal_entries').insert({
-      entry_no:       jNo,
-      entry_date:     today,
-      entry_type:     'auto',
-      reference_type: 'invoice',
-      reference_id:   invoiceId,
-      description:    desc,
-      total_debit:    amount,
-      total_credit:   amount,
-      status:         'posted',
-      posted_by:      currentProfile?.id,
-      created_by:     currentProfile?.id
-    }).select('id').single();
-
-    if(jeErr){
-      console.warn('GL auto-post header failed:',jeErr.message);
-      return;
-    }
-
-    // Insert journal lines
-    const lines = entries.map((e,i)=>({
-      journal_id:   je.id,
-      line_no:      i+1,
-      account_code: e.account_code,
-      account_name: e.account_name,
-      debit:        e.debit,
-      credit:       e.credit,
-      description:  e.description,
-      project_id:   inv.project_id||null
-    }));
-
-    const {error:linesErr} = await sb.from('journal_lines').insert(lines);
-    if(linesErr) console.warn('GL auto-post lines failed:',linesErr.message);
-    else console.log(`GL auto-posted: ${jNo} for invoice ${ref} (${eventType})`);
-
-  }catch(e){
-    console.warn('glAutoPost failed (non-blocking):',e.message);
-  }
+  // GL posting runs in the database (trg_invoice_gl, trg_payment_post).
+  return;
 }
 
 // ── Hook GL auto-posting into invoice save ────────────────────
@@ -9084,73 +8994,8 @@ async function recordStockMovementSafe(params){
 
 // Fallback when atomic RPC not deployed — still with guards
 async function _recordStockMovementFallback(params){
-  try{
-    // Step 1: Get current stock with row-level check
-    const {data:item,error:itemErr} = await sb.from('material_items')
-      .select('id,current_qty,item_code,item_name')
-      .eq('id',params.itemId).single();
-
-    if(itemErr||!item){
-      showToast('Item not found','error');
-      return false;
-    }
-
-    // Step 2: Validate stock availability for outbound
-    if(['issue','transfer_out'].includes(params.type)){
-      if(Number(item.current_qty)<params.qty){
-        showToast(`Insufficient stock: available ${item.current_qty}, requested ${params.qty}`,'error');
-        return false;
-      }
-    }
-
-    // Step 3: Get movement number
-    const mvNo=await nextRefNo('MV');
-
-    // Step 4: Insert ledger entry
-    const newQty = ['issue','transfer_out','return_vendor'].includes(params.type)
-      ? Number(item.current_qty)-params.qty
-      : Number(item.current_qty)+params.qty;
-
-    const {data:mv,error:mvErr} = await sb.from('stock_movements').insert({
-      movement_no:    mvNo,
-      item_id:        params.itemId,
-      movement_type:  params.type,
-      quantity:       params.qty,
-      unit_cost:      params.unitCost||0,
-      total_value:    params.qty*(params.unitCost||0),
-      qty_before:     Number(item.current_qty),
-      qty_after:      newQty,
-      reference_type: params.refType||null,
-      reference_id:   params.refId||null,
-      project_id:     params.projectId||null,
-      notes:          params.notes||null,
-      created_by:     currentProfile?.id
-    }).select('id').single();
-
-    if(mvErr){
-      showToast('Ledger insert failed: '+mvErr.message,'error');
-      logError('Inventory','stockLedgerInsert',mvErr,params);
-      return false;
-    }
-
-    // Step 5: Update stock balance
-    const {error:updErr} = await sb.from('material_items')
-      .update({current_qty:newQty, updated_at:new Date().toISOString()})
-      .eq('id',params.itemId);
-
-    if(updErr){
-      // CRITICAL: ledger inserted but stock not updated — log as critical
-      await logError('Inventory','stockBalanceUpdate',updErr,{...params,mvId:mv.id,severity:'critical'});
-      showToast('⚠️ CRITICAL: Ledger recorded but stock balance failed to update. Contact Admin.','error');
-      return false;
-    }
-
-    return {ok:true, movement_id:mv.id, movement_no:mvNo, new_qty:newQty};
-
-  }catch(e){
-    logError('Inventory','stockMovementFallback',e,params);
-    return false;
-  }
+  showToast('Stock movement failed. No changes were made.','error');
+  return false;
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -9215,7 +9060,7 @@ async function loadResources(){
   el.innerHTML = '<div class="loading">Loading Resources…</div>';
   try{
     const [empR, projR, allocR] = await Promise.all([
-      sb.from('employees').select('id,full_name,employee_no,department,position,status').eq('status','active').order('full_name'),
+      sb.from('employees').select('id,full_name,employee_no,department,position:job_title,status').eq('status','active').order('full_name'),
       sb.from('projects').select('id,project_no,name,status,department,pct').in('status',['planning','execution','monitoring']).order('project_no'),
       sb.from('resource_allocations').select('*,employee:employees(full_name,employee_no,department),project:projects(project_no,name,status)').order('created_at',{ascending:false}).limit(200)
     ]);
@@ -9807,17 +9652,18 @@ async function _saveDocRevisionFallback(docId, revData){
     const {data:rev,error:insErr}=await sb.from('document_revisions').insert({
       document_id:  docId,
       revision_no:  revData.revision_no,
-      title:        revData.title,
-      file_name:    revData.file_name||null,
-      change_notes: revData.change_notes||null,
-      status:       'current',
+      revised_date: new Date().toISOString().split('T')[0],
+      revised_by:   currentProfile?.id,
+      change_description: revData.change_notes||('Revision '+revData.revision_no),
+      file_path:    revData.file_name||null,
+      status:       'draft',
       created_by:   currentProfile?.id
     }).select('id').single();
     if(insErr){ showToast('Revision insert failed: '+insErr.message,'error'); return false; }
 
     // Step 3: Update document master
     const {error:docErr}=await sb.from('documents')
-      .update({current_revision:revData.revision_no, updated_at:new Date().toISOString()})
+      .update({revision:revData.revision_no, updated_at:new Date().toISOString()})
       .eq('id',docId);
     if(docErr){ logError('Documents','updateMaster',docErr,{severity:'critical'}); }
 
@@ -9840,9 +9686,9 @@ async function loadContracts(tab='active'){
   el.innerHTML = '<div class="loading">Loading Contracts…</div>';
   try{
     const [ctrR, projR, vendR] = await Promise.all([
-      sb.from('contracts').select('*,project:projects(project_no,name),vendor:vendors(vendor_name)').order('created_at',{ascending:false}),
+      sb.from('contracts').select('*,customer:crm_customers(name)').order('created_at',{ascending:false}),
       sb.from('projects').select('id,project_no,name').in('status',ACTIVE_STATUSES).order('project_no'),
-      sb.from('vendors').select('id,vendor_name').eq('is_approved',true).order('vendor_name')
+      sb.from('vendors').select('id,vendor_name:name').eq('is_approved',true).order('name')
     ]);
     const ctrs  = ctrR.data||[];
     const projs = projR.data||[];
@@ -9889,11 +9735,11 @@ async function loadContracts(tab='active'){
           ${list.map(c=>{
             const daysLeft = c.end_date ? Math.ceil((new Date(c.end_date)-today)/86400000) : null;
             const expiryColor = daysLeft===null?'var(--faint)':daysLeft<0?'#EF4444':daysLeft<=30?'#F97316':'#10B981';
-            const party = c.contract_type==='client' ? (c.client_name||'—') : (c.vendor?.vendor_name||'—');
+            const party = c.customer?.name||'—';
             return `<tr>
               <td style="color:var(--gold);font-size:10px;font-weight:700">${esc(c.contract_no||'—')}</td>
               <td style="font-weight:600;font-size:11px">${esc(c.title||'—')}</td>
-              <td><span style="font-size:9px;background:${c.contract_type==='client'?'#10B98122':'#3B82F622'};color:${c.contract_type==='client'?'#10B981':'#3B82F6'};border-radius:4px;padding:2px 6px">${esc(c.contract_type||'—')}</span></td>
+              <td><span style="font-size:9px;background:${c.type==='turnkey'?'#10B98122':'#3B82F622'};color:${c.type==='turnkey'?'#10B981':'#3B82F6'};border-radius:4px;padding:2px 6px">${esc(c.type||'—')}</span></td>
               <td style="font-size:11px">${esc(party)}</td>
               <td style="font-size:10px;color:var(--muted)">${esc(c.project?.project_no||'—')}</td>
               <td style="text-align:right;font-weight:700">${fmtKWD(c.contract_value||0)}</td>
@@ -9962,11 +9808,15 @@ async function saveContract(e){
     if(!title){showToast('Title required','error');return;}
     if(!party){showToast('Party name required','error');return;}
     if(!start){showToast('Start date required','error');return;}
+    const {data:custs,error:custErr}=await sb.from('crm_customers').select('id,name').ilike('name',party).limit(2);
+    if(custErr){showToast('Error: '+custErr.message,'error');return;}
+    if(!custs||custs.length!==1){showToast('Party must match one CRM customer exactly','error');return;}
     const no=await nextRefNo('CTR');
+    const allowedTypes=['supply','installation','maintenance','turnkey','service','consulting'];
     const {error}=await sb.from('contracts').insert({
-      contract_no:no, title, contract_type:type, client_name:party,
+      contract_no:no, title, type:allowedTypes.includes(type)?type:'service', customer_id:custs[0].id,
       contract_value:val, start_date:start, end_date:end,
-      project_id:projId, scope, status:'active', created_by:currentProfile?.id
+      notes:scope, status:'active', created_by:currentProfile?.id
     });
     if(error){showToast('Error: '+error.message,'error');return;}
     await writeAudit('contracts',null,'CONTRACT_CREATED',null,{contract_no:no,title,type},'Contract created');
@@ -9977,7 +9827,7 @@ async function saveContract(e){
 }
 
 async function openContractDetail(id){
-  const {data:c}=await sb.from('contracts').select('*,project:projects(project_no,name)').eq('id',id).single();
+  const {data:c}=await sb.from('contracts').select('*,customer:crm_customers(name)').eq('id',id).single();
   if(!c) return;
   const today=new Date();
   const daysLeft=c.end_date?Math.ceil((new Date(c.end_date)-today)/86400000):null;
@@ -9985,8 +9835,8 @@ async function openContractDetail(id){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px">
       ${[
         ['Contract No',  c.contract_no||'—'],
-        ['Type',         c.contract_type||'—'],
-        ['Party',        c.client_name||'—'],
+        ['Type',         c.type||'—'],
+        ['Party',        c.customer?.name||'—'],
         ['Value',        fmtKWD(c.contract_value||0)],
         ['Start Date',   c.start_date||'—'],
         ['End Date',     c.end_date||'Open'],
@@ -9999,7 +9849,7 @@ async function openContractDetail(id){
         <div style="font-size:12px;color:var(--text)">${v}</div>
       </div>`).join('')}
     </div>
-    ${c.scope?`<div style="padding:10px;background:var(--n3);border-radius:6px;font-size:11px;color:var(--muted)"><b style="color:var(--text)">Scope:</b><br>${esc(c.scope)}</div>`:''}
+    ${c.notes?`<div style="padding:10px;background:var(--n3);border-radius:6px;font-size:11px;color:var(--muted)"><b style="color:var(--text)">Scope:</b><br>${esc(c.notese)}</div>`:''}
     <div class="modal-foot">
       <button class="btn btn-ghost" data-h-click="h61">Close</button>
       ${can('edit')?`<button class="btn btn-danger btn-sm" data-h-click="h271" data-ha-click="${esc(JSON.stringify([String((id)??'')]))}">Mark Expired</button>`:''}
@@ -10007,7 +9857,7 @@ async function openContractDetail(id){
 }
 
 async function expireContract(id){
-  await sb.from('contracts').update({status:'expired'}).eq('id',id);
+  await sb.from('contracts').update({status:'completed'}).eq('id',id);
   showToast('Contract marked as expired');
   loadContracts();
 }
@@ -10309,7 +10159,7 @@ async function loadSupplierPerformance(){
 }
 
 async function openRateVendorModal(){
-  const {data:vends}=await sb.from('vendors').select('id,vendor_name').eq('is_approved',true).order('vendor_name');
+  const {data:vends}=await sb.from('vendors').select('id,vendor_name:name').eq('is_approved',true).order('name');
   const today=new Date().toISOString().split('T')[0];
   openModal('Rate Vendor Performance',`
     <div class="form-field"><label>Vendor *</label>
@@ -10415,7 +10265,7 @@ async function loadForecast(){
     const [invR, projR, poR] = await Promise.all([
       sb.from('invoices').select('*').order('created_at',{ascending:false}),
       sb.from('projects').select('id,project_no,name,bac,ac,ev,pct,status,end_date').in('status',ACTIVE_STATUSES),
-      sb.from('purchase_orders').select('total_amount,status,created_at').in('status',['approved','partial'])
+      sb.from('purchase_orders').select('total_amount:total_value,status,created_at').in('status',['approved','partial'])
     ]);
     const invs  = invR.data||[];
     const projs = projR.data||[];
@@ -10690,7 +10540,7 @@ async function _generateReportPDF(reportId){
 
   } else if(reportId==='qhse_summary'){
     const [{data:ncrs},{data:insp}]=await Promise.all([
-      sb.from('ncrs').select('ncr_no,severity,status,department,created_at').order('created_at',{ascending:false}).limit(50),
+      sb.from('ncrs').select('ncr_no,severity,status,created_at').order('created_at',{ascending:false}).limit(50),
       sb.from('hse_inspections').select('*').order('inspection_date',{ascending:false}).limit(20)   // FIX: table is hse_inspections
     ]);
     addHeader('QHSE SUMMARY REPORT', today);
@@ -12122,7 +11972,7 @@ async function loadAnalytics(){
       sb.from('projects').select('id,project_no,name,status,cpi,spi,pct,bac,ev,ac,pv,department,start_date,end_date').order('project_no'),
       sb.from('invoices').select('invoice_type,status,net_amount,paid_date,created_at,due_date'),
       sb.from('workflow_items').select('id,status,entity_type,created_at'),
-      sb.from('ncrs').select('id,severity,status,department,created_at'),
+      sb.from('ncrs').select('id,severity,status,created_at'),
       sb.from('employees').select('id,department,status'),
       sb.from('project_evm_snapshots').select('project_id,snapshot_date,pv,ev,ac').order('snapshot_date')
     ]);
@@ -12682,7 +12532,7 @@ async function loadAppraisal(tab='list'){
     const today=new Date();
     const [appR,empR]=await Promise.all([
       sb.from('performance_appraisals').select('*,employee:employees(full_name,employee_no,department,position)').order('appraisal_date',{ascending:false}),
-      sb.from('employees').select('id,full_name,employee_no,department,position').eq('status','active').order('full_name')
+      sb.from('employees').select('id,full_name,employee_no,department,position:job_title').eq('status','active').order('full_name')
     ]);
     const apps=appR.data||[], emps=empR.data||[];
     const thisYear=today.getFullYear();
@@ -13166,7 +13016,7 @@ async function b3NewPage(){
   const c=document.getElementById('b3-content');
   c.innerHTML='<div class="loading">Loading…</div>';
   try{
-    const{data:emps}=await sb.from('employees').select('id,full_name,employee_no,department,position').eq('status','active').order('full_name');
+    const{data:emps}=await sb.from('employees').select('id,full_name,employee_no,department,position:job_title').eq('status','active').order('full_name');
     window._b3Emps=emps||[];
     const yr=new Date().getFullYear();
     const periods=[`Annual ${yr}`,`H1 ${yr}`,`H2 ${yr}`,`Q1 ${yr}`,`Q2 ${yr}`,`Q3 ${yr}`,`Q4 ${yr}`];
@@ -14437,22 +14287,22 @@ async function exportDataset(id, format){
       const {data:r}=await sb.from('projects').select('project_no,name,client,department,status,pct,cpi,spi,bac,ev,ac,pv,start_date,end_date').order('project_no');
       data=r||[]; cols=Object.keys(data[0]||{}); label='Projects';
     } else if(id==='invoices'){
-      const {data:r}=await sb.from('invoices').select('invoice_no,invoice_type,client_name,vendor_name,project_id,net_amount,status,invoice_date,due_date,paid_date').order('created_at',{ascending:false});
+      const {data:r}=await sb.from('invoices').select('invoice_no,invoice_type,project_id,net_amount,status,invoice_date,due_date,paid_date').order('created_at',{ascending:false});
       data=r||[]; cols=Object.keys(data[0]||{}); label='Invoices';
     } else if(id==='employees'){
-      const {data:r}=await sb.from('employees').select('employee_no,full_name,department,position,status,employment_type,join_date').order('employee_no');
+      const {data:r}=await sb.from('employees').select('employee_no,full_name,department,position:job_title,status,employment_type,join_date').order('employee_no');
       data=r||[]; cols=Object.keys(data[0]||{}); label='Employees';
     } else if(id==='vendors'){
       const {data:r}=await sb.from('vendors').select('vendor_code,name,category,contact_person,email,phone,is_approved,status').order('vendor_code');
       data=r||[]; cols=Object.keys(data[0]||{}); label='Vendors';
     } else if(id==='ncrs'){
-      const {data:r}=await sb.from('ncrs').select('ncr_no,severity,status,department,description,created_at').order('created_at',{ascending:false});
+      const {data:r}=await sb.from('ncrs').select('ncr_no,severity,status,description:title,created_at').order('created_at',{ascending:false});
       data=r||[]; cols=Object.keys(data[0]||{}); label='NCRs';
     } else if(id==='workflow'){
       const {data:r}=await sb.from('workflow_items').select('ref_no,entity_type,title,current_step,status,created_at,due_date').order('created_at',{ascending:false});
       data=r||[]; cols=Object.keys(data[0]||{}); label='Workflow';
     } else if(id==='contracts'){
-      const {data:r}=await sb.from('contracts').select('contract_no,title,contract_type,client_name,contract_value,start_date,end_date,status').order('contract_no');
+      const {data:r}=await sb.from('contracts').select('contract_no,title,contract_type:type,contract_value,start_date,end_date,status').order('contract_no');
       data=r||[]; cols=Object.keys(data[0]||{}); label='Contracts';
     } else if(id==='assets'){
       const {data:r}=await sb.from('assets').select('asset_no,asset_name,category,serial_number,purchase_value,book_value,condition,status,location').order('asset_no');
@@ -14574,13 +14424,13 @@ async function executeImport(rows, importId){
       } else if(importId==='employees_import'){
         const [empNo,fullName,dept,pos,empType,joinDate]=row;
         if(!empNo||!fullName) continue;
-        const {error}=await sb.from('employees').upsert({employee_no:empNo,full_name:fullName,department:dept||null,position:pos||null,employment_type:empType||'permanent',join_date:joinDate||null,status:'active'},{onConflict:'employee_no'});
+        const {error}=await sb.from('employees').upsert({employee_no:empNo,full_name:fullName,department:dept||'General',job_title:pos||'Not set',employment_type:empType||'permanent',join_date:joinDate||new Date().toISOString().split('T')[0],status:'active'},{onConflict:'employee_no'});
         if(error){errors++;} else success++;
       } else if(importId==='invoices_import'){
         const [invNo,type,client,amount,invDate,dueDate,status]=row;
         if(!invNo||!amount) continue;
-        const {error}=await sb.from('invoices').upsert({invoice_no:invNo,invoice_type:type||'client',client_name:client||null,net_amount:Number(amount)||0,invoice_date:invDate||null,due_date:dueDate||null,status:status||'pending'},{onConflict:'invoice_no'});
-        if(error){errors++;} else success++;
+        // Invoices need a project and approval workflow, so CSV import stays disabled.
+        errors++;
       } else if(importId==='assets_import'){
         const [name,cat,serial,val,purchDate,loc,cond]=row;
         if(!name) continue;
@@ -15030,7 +14880,7 @@ async function updatePunchStatus(id, newStatus, tab){
 async function openInvoiceMatchingModal(invoiceId){
   const [{data:inv},{data:pos}]=await Promise.all([
     sb.from('invoices').select('*,vendor:vendors(vendor_name)').eq('id',invoiceId).single(),
-    sb.from('purchase_orders').select('id,po_no,total_amount,status,vendor_id').eq('status','approved').order('po_no')
+    sb.from('purchase_orders').select('id,po_no,total_amount:total_value,status,vendor_id').eq('status','approved').order('po_no')
   ]);
   if(!inv) return;
   const vendorPOs=(pos||[]).filter(p=>p.vendor_id===inv.vendor_id);
@@ -15329,7 +15179,7 @@ async function sendAIMessage(presetPrompt){
       sb.from('projects').select('project_no,name,status,cpi,spi,pct,bac,ev,ac,department').in('status',ACTIVE_STATUSES).order('project_no'),
       sb.from('invoices').select('invoice_type,status,net_amount,due_date').order('created_at',{ascending:false}).limit(200),
       sb.from('workflow_items').select('ref_no,status,entity_type,current_step,due_date').in('status',['pending','overdue']).limit(20),
-      sb.from('ncrs').select('ncr_no,severity,status,department').eq('status','open').limit(20)
+      sb.from('ncrs').select('ncr_no,severity,status').eq('status','open').limit(20)
     ]);
 
     const projs=projR.data||[], invs=invR.data||[], wfs=wfR.data||[], ncrs=ncrR.data||[];
@@ -16411,9 +16261,9 @@ async function openCustomer360(customerId){
     sb.from('crm_opportunities').select('*').eq('customer_id',customerId).order('created_at',{ascending:false}),
     sb.from('crm_quotations').select('*').eq('customer_id',customerId).order('created_at',{ascending:false}),
     sb.from('crm_activities').select('*').eq('customer_id',customerId).order('activity_date',{ascending:false}).limit(8),
-    sb.from('projects').select('id,project_no,name,status,pct_complete,cpi,spi,contract_value').eq('customer_id_crm',customerId),
+    sb.from('projects').select('id,project_no,name,status,pct_complete:pct,cpi,spi,contract_value').eq('customer_id_crm',customerId),
     sb.from('contracts').select('*').eq('customer_id',customerId).order('created_at',{ascending:false}),
-    sb.from('crm_contacts').select('*').eq('customer_id',customerId).order('full_name').catch(()=>({data:[]}))
+    sb.from('crm_contacts').select('*').eq('customer_id',customerId).order('full_name')
   ]);
   const c = custR.data;
   const opps = oppsR.data||[], quots = quotsR.data||[];
@@ -17482,7 +17332,7 @@ async function openAddActivityModal(presetOppId, presetCustId){
   const [custsR, oppsR, leadsR, projsR, usersR] = await Promise.all([
     sb.from('crm_customers').select('id,name').eq('status','active').order('name'),
     sb.from('crm_opportunities').select('id,opp_no,title,customer_id').not('stage','in','(won,lost)').order('created_at',{ascending:false}).limit(50),
-    sb.from('crm_leads').select('id,lead_no,company').not('status','in','(converted,lost)').order('created_at',{ascending:false}).limit(30),
+    sb.from('crm_leads').select('id,lead_no,company:customer_name_raw').not('status','in','(converted,lost)').order('created_at',{ascending:false}).limit(30),
     sb.from('projects').select('id,project_no,name').eq('status','execution').order('project_no').limit(50),
     sb.from('user_profiles').select('id,full_name').order('full_name')
   ]);
@@ -17952,7 +17802,7 @@ async function openVendorPortal(){
     const [vendR, poR, invR] = await Promise.all([
       sb.from('vendors').select('*').order('vendor_code'),
       sb.from('purchase_orders').select('*,vendor:vendors(vendor_code,name)').order('created_at',{ascending:false}).limit(100),
-      sb.from('invoices').select('id,vendor_id,net_amount,status,invoice_type').eq('invoice_type','supplier').limit(200)
+      sb.from('invoices').select('id,po:purchase_orders(vendor_id),net_amount,status,invoice_type').eq('invoice_type','supplier').limit(200)
     ]);
     const vendors = vendR.data||[], pos = poR.data||[], invs = invR.data||[];
     const approved    = vendors.filter(v=>v.is_approved);
@@ -17980,7 +17830,7 @@ async function openVendorPortal(){
         </tr></thead><tbody>
         ${vendors.map(v=>{
           const vPOs = pos.filter(p=>p.vendor_id===v.id);
-          const vInvs = invs.filter(i=>i.vendor_id===v.id&&!['paid','cancelled'].includes(i.status));
+          const vInvs = invs.filter(i=>i.po?.vendor_id===v.id&&!['paid','cancelled'].includes(i.status));
           const vPOVal = vPOs.reduce((s,p)=>s+Number(p.po_value||0),0);
           const vOutstanding = vInvs.reduce((s,i)=>s+Number(i.net_amount||0),0);
           const openPOs = vPOs.filter(p=>!['received','cancelled'].includes(p.status)).length;
@@ -18015,7 +17865,7 @@ async function loadTimeTracking(){
     const [tsR, projR, empR] = await Promise.all([
       sb.from('timesheets').select('*,employee:employees(emp_no,full_name,department),project:projects(project_no,name)').order('created_at',{ascending:false}).limit(200),
       sb.from('projects').select('id,project_no,name').in('status',['planning','execution','monitoring','closeout']).order('project_no'),
-      sb.from('employees').select('id,emp_no,full_name,department').eq('status','active').order('full_name')
+      sb.from('employees').select('id,emp_no:employee_no,full_name,department').eq('status','active').order('full_name')
     ]);
     const ts = tsR.data||[], projs = projR.data||[], emps = empR.data||[];
     const totalHours = ts.reduce((s,t)=>s+Number(t.hours_regular||0)+Number(t.hours_overtime||0),0);
@@ -18114,7 +17964,7 @@ async function loadTimeTracking(){
 async function openLogTimeModal(){
   const [projR, empR] = await Promise.all([
     sb.from('projects').select('id,project_no,name').in('status',['planning','execution','monitoring','closeout']).order('project_no'),
-    sb.from('employees').select('id,emp_no,full_name').eq('status','active').order('full_name')
+    sb.from('employees').select('id,emp_no:employee_no,full_name').eq('status','active').order('full_name')
   ]);
   const period = new Date().toISOString().slice(0,7);
   openModal('⏱ Log Hours',`
@@ -18319,7 +18169,7 @@ async function loadBulkOperations(){
   try {
     const [projR, empR, vendR, custR] = await Promise.all([
       sb.from('projects').select('id,project_no,name,status,priority,pm_id').order('project_no'),
-      sb.from('employees').select('id,emp_no,full_name,status,department').order('full_name'),
+      sb.from('employees').select('id,emp_no:employee_no,full_name,status,department').order('full_name'),
       sb.from('vendors').select('id,vendor_code,name,is_approved,status').order('vendor_code'),
       sb.from('crm_customers').select('id,customer_no,name,status,rating').order('customer_no')
     ]);
@@ -18547,7 +18397,7 @@ async function loadWeeklyReport(){
       safeQ(function(){ return sb.from('crm_opportunities').select('id,stage,estimated_value,probability'); }),
       safeQ(function(){ return sb.from('crm_leads').select('id,status,created_at'); }),
       safeQ(function(){ return sb.from('timesheets').select('id,hours_regular,hours_overtime,period,status'); }),
-      safeQ(function(){ return sb.from('purchase_orders').select('id,status,po_value'); })
+      safeQ(function(){ return sb.from('purchase_orders').select('id,status,po_value:total_value'); })
     ]);
     var projs=results[0], invs=results[1], wfs=results[2], ncrs=results[3];
     var msData=results[4], crmOpps=results[5], crmLeads=results[6], tsData=results[7], pos=results[8];
@@ -18723,6 +18573,8 @@ const __H = {
   h29: function(event, __a){ navTo('documents',this)
   },
   h30: function(event, __a){ navTo('workflow',this)
+  },
+  h901: function(event, __a){ issuePurchaseOrder(event,__a[0],__a[1])
   },
   h31: function(event, __a){ navTo('audit',this)
   },
