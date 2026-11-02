@@ -814,9 +814,12 @@ async function doLogout(){
 }
 
 function applyVersionLabels(){
-  document.querySelectorAll('header *, aside *').forEach(el=>{
-    if(el.children.length===0 && /v4\.2/.test(el.textContent)) el.textContent=el.textContent.replace('v4.2','v4.3.2');
-  });
+  const w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);
+  let n;
+  while((n=w.nextNode())){
+    if(n.parentElement?.closest('#modal-overlay')) continue;
+    if(/^\s*(SP360 )?v4\.2\b/.test(n.nodeValue)) n.nodeValue=n.nodeValue.replace('v4.2','v4.3.2');
+  }
 }
 async function loadWfBadge(){
   applyVersionLabels();
@@ -2230,7 +2233,7 @@ async function loadProc(tab='vendors'){
     ${tab==='pos'?`<button class="btn btn-primary btn-sm" data-h-click="h132">+ New PO</button>`:''}
     ${tab==='rfqs'?`<button class="btn btn-ghost btn-sm" data-h-click="h133">+ New RFQ</button>`:''}
     ${tab==='vendors'?`<button class="btn btn-ghost btn-sm" data-h-click="h134">+ Add Vendor</button>`:''}
-    ${tab==='mrvs'?`<span style="font-size:10px;color:var(--muted);padding:4px 8px">📦 MRVs are created from Purchase Orders (PO → Receive ✓)</span>`:''}
+    ${tab==='mrvs'&&currentProfile?.role==='Procurement Lead'?`<button class="btn btn-primary btn-sm" data-h-click="h902">+ New MRV</button>`:''}
   </div>`:''}
   </div>
   <div class="grid4">${kpis}</div>
@@ -2391,6 +2394,25 @@ async function issuePurchaseOrder(e,poId,poNo){
     loadProc('pos');
   }catch(err){showToast('Error: '+err.message,'error');}
   finally{if(btn){btn.disabled=false;btn.textContent='Issue ▶';}}
+}
+
+async function openNewMRVPicker(){
+  const {data:pos,error}=await sb.from('purchase_orders').select('id,po_no,total_value,vendor:vendors(name),project:projects(project_no)')
+    .in('status',['issued','partial_receipt']).order('po_no');
+  if(error){showToast('Error: '+error.message,'error');return;}
+  if(!pos||!pos.length){showToast('No issued PO to receive. Issue an approved PO first.','error');return;}
+  openModal('New MRV — Select Purchase Order',`
+  <div class="form-field"><label>Issued PO *</label>
+    <select id="mrv-po-pick">${pos.map(p=>`<option value="${esc(p.id)}" data-no="${esc(p.po_no)}">${esc(p.po_no)} — ${esc(p.project?.project_no||'—')} — ${esc(p.vendor?.name||'—')} — ${fmtKWD(p.total_value)}</option>`).join('')}</select>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-ghost" data-h-click="h61">Cancel</button>
+    <button class="btn btn-primary" data-h-click="h903">Continue</button>
+  </div>`);
+}
+function continueNewMRV(){
+  const sel=document.getElementById('mrv-po-pick');
+  openMRVFromPO(sel.value,sel.options[sel.selectedIndex].dataset.no);
 }
 
 async function openMRVFromPO(poId,poNo){
@@ -3009,7 +3031,7 @@ async function loadHR(tab='employees'){
     const today=new Date();
     const expiring=L.filter(c=>c.end_date&&c.status==='active'&&(new Date(c.end_date)-today)<30*86400000).length;
     kpis=kpi('Total',L.length,'#E2E8F0')+kpi('Active',L.filter(c=>c.status==='active').length,'#10B981')+kpi('Expiring Soon',expiring,'#F97316')+kpi('Expired',L.filter(c=>c.status==='expired').length,'#EF4444');
-    body=`<div style="display:flex;justify-content:flex-end;margin-bottom:10px">${isPMO?`<button class="btn btn-primary btn-sm" data-h-click="h159">+ New Contract</button>`:''}</div>
+    body=`<div style="display:flex;justify-content:flex-end;margin-bottom:10px">${isPMO?`<button class="btn btn-primary btn-sm" data-h-click="h904">+ New Contract</button>`:''}</div>
     <table><thead><tr><th>Employee</th><th>Type</th><th>Start</th><th>End</th><th style="text-align:right">Basic (KWD)</th><th style="text-align:right">Package (KWD)</th><th style="text-align:center">Status</th></tr></thead><tbody>
     ${L.map(c=>{const exp=c.end_date&&c.status==='active'&&(new Date(c.end_date)-today)<30*86400000;return`<tr>
       <td style="font-weight:700;font-size:11px">${esc(c.employee?.full_name||'—')}<div style="font-size:9px;color:var(--faint)">${esc(c.employee?.employee_no||'')} · ${esc(c.employee?.department||'')}</div></td>
@@ -3636,17 +3658,17 @@ async function saveRisk(e){
   finally{if(btn){btn.disabled=false;btn.textContent='Add Risk';}}
 }
 
-function openNewContractModal(){
+function openNewEmployeeContractModal(){
   const empSel=window._cachedEmployees||[];
   openModal('New Employee Contract',`
     <div class="form-field"><label>Employee *</label><select id="con-emp" style="width:100%;background:var(--card);border:1px solid var(--bdr);border-radius:8px;padding:10px;color:var(--text)"><option value="">— Select —</option>${empSel.map(e=>`<option value="${esc(e.id)}">${esc(e.full_name)} (${esc(e.employee_no)})</option>`).join('')}</select></div>
     <div class="form-row"><div class="form-field"><label>Type *</label><select id="con-type" style="width:100%;background:var(--card);border:1px solid var(--bdr);border-radius:8px;padding:10px;color:var(--text)"><option value="permanent">Permanent</option><option value="temporary">Temporary</option><option value="contract">Contract</option><option value="probation">Probation</option></select></div><div class="form-field"><label>Start Date *</label><input id="con-start" type="date"/></div></div>
     <div class="form-row"><div class="form-field"><label>Basic Salary *</label><input id="con-basic" type="number" min="0" step="0.001" placeholder="0.000"/></div><div class="form-field"><label>Allowances</label><input id="con-allow" type="number" min="0" step="0.001" placeholder="0.000"/></div></div>
-    <div class="modal-foot"><button class="btn btn-ghost" data-h-click="h61">Cancel</button><button class="btn btn-primary" data-h-click="h193">Create Contract</button></div>
+    <div class="modal-foot"><button class="btn btn-ghost" data-h-click="h61">Cancel</button><button class="btn btn-primary" data-h-click="h905">Create Contract</button></div>
   `);
 }
 
-async function saveContract(e){
+async function saveEmployeeContract(e){
   const btn=e?.target;if(btn){btn.disabled=true;btn.textContent='Saving...';}
   try{
     const empId=document.getElementById('con-emp').value;
@@ -9764,7 +9786,10 @@ async function loadContracts(tab='active'){
   }
 }
 
-function openNewContractModal(){
+async function openNewContractModal(){
+  const {data:_ctrCustomers,error:_ctrErr}=await sb.from('crm_customers').select('id,name').order('name');
+  if(_ctrErr){showToast('Error: '+_ctrErr.message,'error');return;}
+  if(!_ctrCustomers?.length){showToast('Add a CRM customer first','error');return;}
   const projs = window._cachedProjects||[];
   const today = new Date().toISOString().split('T')[0];
   openModal('New Contract',`
@@ -9772,27 +9797,22 @@ function openNewContractModal(){
       <div class="form-field"><label>Title *</label><input id="ctr-title" placeholder="Contract title"/></div>
       <div class="form-field"><label>Type *</label>
         <select id="ctr-type" style="width:100%;background:var(--card);border:1px solid var(--bdr);border-radius:8px;padding:10px;color:var(--text)">
-          <option value="client">Client Contract</option>
-          <option value="vendor">Vendor/Subcontract</option>
-          <option value="nda">NDA</option>
-          <option value="mou">MOU</option>
-          <option value="framework">Framework Agreement</option>
+          <option value="turnkey">Turnkey</option>
+          <option value="supply">Supply</option>
+          <option value="installation">Installation</option>
+          <option value="maintenance">Maintenance</option>
+          <option value="service">Service</option>
+          <option value="consulting">Consulting</option>
         </select>
       </div>
     </div>
     <div class="form-row">
-      <div class="form-field"><label>Client/Party Name *</label><input id="ctr-party" placeholder="Party name"/></div>
+      <div class="form-field"><label>Customer *</label><select id="ctr-party"><option value="">— Select customer —</option>${(_ctrCustomers||[]).map(c=>`<option value="${esc(c.id)}">${esc(c.name)}</option>`).join('')}</select></div>
       <div class="form-field"><label>Contract Value (KWD)</label><input id="ctr-value" type="number" step="0.001" placeholder="0.000"/></div>
     </div>
     <div class="form-row">
       <div class="form-field"><label>Start Date *</label><input id="ctr-start" type="date" value="${today}"/></div>
       <div class="form-field"><label>End Date</label><input id="ctr-end" type="date"/></div>
-    </div>
-    <div class="form-field"><label>Linked Project</label>
-      <select id="ctr-proj" style="width:100%;background:var(--card);border:1px solid var(--bdr);border-radius:8px;padding:10px;color:var(--text)">
-        <option value="">— None —</option>
-        ${projs.map(p=>`<option value="${esc(p.id)}">${esc(p.project_no)} — ${esc(p.name)}</option>`).join('')}
-      </select>
     </div>
     <div class="form-field"><label>Scope / Description</label><textarea id="ctr-scope" rows="3" style="width:100%;background:var(--card);border:1px solid var(--bdr);border-radius:8px;padding:10px;color:var(--text);resize:vertical"></textarea></div>
     <div class="modal-foot">
@@ -9810,18 +9830,14 @@ async function saveContract(e){
     const val   = Number(document.getElementById('ctr-value').value)||0;
     const start = document.getElementById('ctr-start').value;
     const end   = document.getElementById('ctr-end').value||null;
-    const projId= document.getElementById('ctr-proj').value||null;
     const scope = document.getElementById('ctr-scope').value.trim()||null;
     if(!title){showToast('Title required','error');return;}
-    if(!party){showToast('Party name required','error');return;}
+    if(!party){showToast('Select a customer','error');return;}
     if(!start){showToast('Start date required','error');return;}
-    const {data:custs,error:custErr}=await sb.from('crm_customers').select('id,name').ilike('name',party).limit(2);
-    if(custErr){showToast('Error: '+custErr.message,'error');return;}
-    if(!custs||custs.length!==1){showToast('Party must match one CRM customer exactly','error');return;}
     const no=await nextRefNo('CTR');
     const allowedTypes=['supply','installation','maintenance','turnkey','service','consulting'];
     const {error}=await sb.from('contracts').insert({
-      contract_no:no, title, type:allowedTypes.includes(type)?type:'service', customer_id:custs[0].id,
+      contract_no:no, title, type:allowedTypes.includes(type)?type:'service', customer_id:party,
       contract_value:val, start_date:start, end_date:end,
       notes:scope, status:'active', created_by:currentProfile?.id
     });
@@ -18582,6 +18598,14 @@ const __H = {
   h30: function(event, __a){ navTo('workflow',this)
   },
   h901: function(event, __a){ issuePurchaseOrder(event,__a[0],__a[1])
+  },
+  h902: function(event, __a){ openNewMRVPicker()
+  },
+  h903: function(event, __a){ continueNewMRV()
+  },
+  h904: function(event, __a){ openNewEmployeeContractModal()
+  },
+  h905: function(event, __a){ saveEmployeeContract(event)
   },
   h31: function(event, __a){ navTo('audit',this)
   },
