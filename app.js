@@ -813,7 +813,13 @@ async function doLogout(){
   window.location.reload();
 }
 
+function applyVersionLabels(){
+  document.querySelectorAll('header *, aside *').forEach(el=>{
+    if(el.children.length===0 && /v4\.2/.test(el.textContent)) el.textContent=el.textContent.replace('v4.2','v4.3.2');
+  });
+}
 async function loadWfBadge(){
+  applyVersionLabels();
   // Header and sidebar counts show only what the signed-in role can act on
   const {data}=await sb.from('workflow_items').select('id,current_step').in('status',['pending','overdue']);
   const role=currentProfile?.role||'';
@@ -2184,7 +2190,7 @@ async function loadProc(tab='vendors'){
   } else if(tab==='pos'){
     const {data:list}=await sb.from('purchase_orders').select('*,project:projects(project_no),vendor:vendors(name)').order('created_at',{ascending:false});
     const L=list||[];
-    const pending=L.filter(p=>p.status&&p.status.includes('approval'));
+    const pending=L.filter(p=>p.status&&(p.status==='submitted'||p.status.includes('approval')));
     kpis=kpi('Total POs',L.length,'#E2E8F0')+kpi('Pending Approval',pending.length,'#F97316')+kpi('Issued',L.filter(p=>p.status==='issued').length,'#10B981')+kpi('Total Value',fmtKWD(L.reduce((s,p)=>s+Number(p.total_value),0)),'#C9A84C');
     body=`<table><thead><tr><th>No</th><th>Project</th><th>Vendor</th><th>Description</th><th style="text-align:right">Value (KWD)</th><th>Date</th><th style="text-align:center">Status</th><th style="text-align:center">Action</th></tr></thead><tbody>
     ${L.map(p=>{
@@ -7063,6 +7069,7 @@ function openAboutModal(){
   <div style="margin-bottom:14px">
     <div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px">📋 Changelog</div>
     ${[
+      ['v4.3.2','Roles & Workflow','Approved role matrix · working PO and invoice approvals · actionable pending counts · Issue PO · Finance KPIs follow approved invoices · corrected column names','#C9A84C'],
       ['v4.2','Navigation','Sidebar regrouped into 9 business areas · collapsible groups (one open, current page auto-opens, empty groups hidden per role) · Ctrl+K page search (English / عربي)','#3B82F6'],
       ['v4.1','Security & Data Integrity','MFA enforced on every entry path (fail-closed, aal2 in RLS) · XSS escaping across all screens · strict CSP (no inline scripts/handlers, SRI on CDN libs) · server-side RLS & role gates · atomic numbering (yearly formats kept) · atomic Lead→Opp→Contract→Project conversions · duplicate-customer guard · DB audit trail (before/after) · 28 missing tables created · offline banner · structured Health Check','#C9A84C'],
       ['v4.0','CRM Module','Customers · Leads · Opportunities · Pipeline · Quotations · Activities · Customer 360 · CRM → Contract → Project','#10B981'],
@@ -8764,7 +8771,7 @@ async function runSystemChecks(){
 async function exportPayslip(runId){
   try{
     const {data:run,error}=await sb.from('payroll_runs')
-      .select('*,employee:employees(full_name,employee_no,department,position,employee_contracts(basic_salary,allowances))')
+      .select('*,employee:employees(full_name,employee_no,department,position:job_title,employee_contracts(basic_salary,allowances))')
       .eq('id',runId).single();
     if(error||!run){showToast('Payroll record not found','error');return;}
 
@@ -10108,7 +10115,7 @@ async function saveLesson(e){
 // ══════════════════════════════════════════════════════════════
 async function loadSupplierPerformance(){
   const {data:ratings} = await sb.from('vendor_performance')
-    .select('*,vendor:vendors(vendor_name,vendor_code,category)')
+    .select('*,vendor:vendors(vendor_name:name,vendor_code,category)')
     .order('rating_date',{ascending:false});
   const R = ratings||[];
 
@@ -12531,7 +12538,7 @@ async function loadAppraisal(tab='list'){
   try{
     const today=new Date();
     const [appR,empR]=await Promise.all([
-      sb.from('performance_appraisals').select('*,employee:employees(full_name,employee_no,department,position)').order('appraisal_date',{ascending:false}),
+      sb.from('performance_appraisals').select('*,employee:employees(full_name,employee_no,department,position:job_title)').order('appraisal_date',{ascending:false}),
       sb.from('employees').select('id,full_name,employee_no,department,position:job_title').eq('status','active').order('full_name')
     ]);
     const apps=appR.data||[], emps=empR.data||[];
@@ -12678,7 +12685,7 @@ async function saveAppraisal(e){
 }
 
 async function openAppraisalDetail(id){
-  const {data:a}=await sb.from('performance_appraisals').select('*,employee:employees(full_name,department,position)').eq('id',id).single();
+  const {data:a}=await sb.from('performance_appraisals').select('*,employee:employees(full_name,department,position:job_title)').eq('id',id).single();
   if(!a) return;
   const sc=Number(a.overall_score||0);
   const scoreColor=s=>s>=4.5?'#10B981':s>=3.5?'#3B82F6':s>=2.5?'#C9A84C':s>=1.5?'#F97316':'#EF4444';
@@ -12849,7 +12856,7 @@ async function b3Dashboard(){
   c.innerHTML='<div class="loading">Loading dashboard…</div>';
   try{
     const[aR,eR]=await Promise.all([
-      sb.from('performance_appraisals').select('*,employee:employees(full_name,employee_no,department,position)').order('appraisal_date',{ascending:false}),
+      sb.from('performance_appraisals').select('*,employee:employees(full_name,employee_no,department,position:job_title)').order('appraisal_date',{ascending:false}),
       sb.from('employees').select('id,full_name,employee_no,department,status').eq('status','active')
     ]);
     const apps=aR.data||[],emps=eR.data||[];
@@ -12918,7 +12925,7 @@ async function b3List(filter='all'){
   const c=document.getElementById('b3-content');
   c.innerHTML='<div class="loading">Loading…</div>';
   try{
-    const{data:apps}=await sb.from('performance_appraisals').select('*,employee:employees(full_name,employee_no,department,position)').order('appraisal_date',{ascending:false});
+    const{data:apps}=await sb.from('performance_appraisals').select('*,employee:employees(full_name,employee_no,department,position:job_title)').order('appraisal_date',{ascending:false});
     const all=apps||[];
     const depts=[...new Set(all.map(a=>a.employee?.department).filter(Boolean))].sort();
     const periods=[...new Set(all.map(a=>a.appraisal_period).filter(Boolean))].sort().reverse();
@@ -12974,7 +12981,7 @@ async function b3DelApp(id){
 }
 
 async function b3ViewApp(id){
-  const{data:a}=await sb.from('performance_appraisals').select('*,employee:employees(full_name,employee_no,department,position)').eq('id',id).single();
+  const{data:a}=await sb.from('performance_appraisals').select('*,employee:employees(full_name,employee_no,department,position:job_title)').eq('id',id).single();
   if(!a)return;
   const sc=Number(a.overall_score||0);const band=b3Band(sc);
   let kpiHtml='';
@@ -14879,18 +14886,18 @@ async function updatePunchStatus(id, newStatus, tab){
 // ══════════════════════════════════════════════════════════════
 async function openInvoiceMatchingModal(invoiceId){
   const [{data:inv},{data:pos}]=await Promise.all([
-    sb.from('invoices').select('*,vendor:vendors(vendor_name)').eq('id',invoiceId).single(),
+    sb.from('invoices').select('*,po:purchase_orders(vendor_id,vendor:vendors(vendor_name:name))').eq('id',invoiceId).single(),
     sb.from('purchase_orders').select('id,po_no,total_amount:total_value,status,vendor_id').eq('status','approved').order('po_no')
   ]);
   if(!inv) return;
-  const vendorPOs=(pos||[]).filter(p=>p.vendor_id===inv.vendor_id);
+  const vendorPOs=(pos||[]).filter(p=>p.vendor_id===inv.po?.vendor_id);
 
   openModal(`🔗 Invoice Matching — ${inv.invoice_no}`,`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">
       <div style="padding:12px;background:var(--n3);border-radius:8px">
         <div style="font-size:10px;font-weight:700;color:var(--gold);margin-bottom:8px">INVOICE</div>
         <div style="font-size:12px;font-weight:700">${esc(inv.invoice_no)}</div>
-        <div style="font-size:11px;color:var(--muted)">${esc(inv.vendor?.vendor_name||'—')}</div>
+        <div style="font-size:11px;color:var(--muted)">${esc(inv.po?.vendor?.vendor_name||'—')}</div>
         <div style="font-size:16px;font-weight:900;color:var(--gold);margin-top:6px">${fmtKWD(inv.net_amount||0)}</div>
         <div style="font-size:9px;color:var(--faint)">${esc(inv.invoice_date||'—')}</div>
       </div>
@@ -17279,7 +17286,7 @@ async function loadCRMActivities(){
   el.innerHTML = `<div class="loading">Loading activities…</div>`;
   try {
     const {data:acts, error} = await sb.from('crm_activities')
-      .select('*,customer:crm_customers(name),assignee:user_profiles!assigned_to(full_name),opportunity:crm_opportunities(opp_no,title),lead:crm_leads(lead_no,company),project:projects(project_no,name)')
+      .select('*,customer:crm_customers(name),assignee:user_profiles!assigned_to(full_name),opportunity:crm_opportunities(opp_no,title),lead:crm_leads(lead_no,company:customer_name_raw),project:projects(project_no,name)')
       .order('activity_date',{ascending:false})
       .limit(100);
     if(error) throw error;
@@ -17863,7 +17870,7 @@ async function loadTimeTracking(){
   el.innerHTML = `<div class="loading">Loading timesheets…</div>`;
   try {
     const [tsR, projR, empR] = await Promise.all([
-      sb.from('timesheets').select('*,employee:employees(emp_no,full_name,department),project:projects(project_no,name)').order('created_at',{ascending:false}).limit(200),
+      sb.from('timesheets').select('*,employee:employees(emp_no:employee_no,full_name,department),project:projects(project_no,name)').order('created_at',{ascending:false}).limit(200),
       sb.from('projects').select('id,project_no,name').in('status',['planning','execution','monitoring','closeout']).order('project_no'),
       sb.from('employees').select('id,emp_no:employee_no,full_name,department').eq('status','active').order('full_name')
     ]);
