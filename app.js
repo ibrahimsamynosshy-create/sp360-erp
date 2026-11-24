@@ -34,7 +34,7 @@ var sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
     autoRefreshToken:   true,
     detectSessionInUrl: true,
     storageKey:         'sp360-auth-token',
-    flowType:           'implicit'
+    flowType:           'pkce'   // SEC: PKCE keeps access tokens out of the URL fragment (was 'implicit')
   }
 });
 
@@ -263,6 +263,9 @@ const cpiColor = v=>Number(v)>=1?'#10B981':Number(v)>=0.9?'#F97316':'#EF4444';
 const ragScore = p=>{const cpi=Number(p.cpi);if(p.spi==null)return null;return Math.min(cpi,Number(p.spi));};
 const rag = v=>v===null?'⚪':v>=1?'🟢':v>=0.9?'🟡':'🔴';
 const esc = s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+// SEC: CSV/formula-injection guard (OWASP CSV Injection). Cells starting with = + - @ TAB CR are
+// prefixed with ' so Excel treats them as text, then the cell is always quoted.
+const csvCell = v=>{let t=String(v==null?'':v);if(/^[=+\-@\t\r]/.test(t))t="'"+t;return '"'+t.replace(/"/g,'""')+'"';};
 // Safe JavaScript argument for inline event handlers. HTML escaping alone is not sufficient
 // because the browser decodes entities before evaluating the onclick JavaScript.
 const jsArg = v=>esc(JSON.stringify(String(v==null?'':v)));
@@ -3878,7 +3881,7 @@ function exportInventoryCSV(){
     var cells=[...tr.querySelectorAll('td')].map(function(td){return td.textContent.trim().replace('⚠️','');});
     if(cells.length>=4) rows.push(cells.slice(0,8));
   });
-  var csv=rows.map(function(r){return r.map(function(v){return '"'+String(v||'').replace(/"/g,'""')+'"';}).join(',');}).join('\n');
+  var csv=rows.map(function(r){return r.map(csvCell).join(',');}).join('\n');
   var a=document.createElement('a');
   a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
   a.download='SP360_Inventory_'+new Date().toISOString().slice(0,10)+'.csv';
@@ -7770,7 +7773,7 @@ function biDownload(filename, data){
 
 function biStatus(id, msg, ok=true){
   const el = document.getElementById('bi-status-'+id);
-  if(el) el.innerHTML = `<span style="color:${ok?'#10B981':'#EF4444'}">${msg}</span>`;
+  if(el) el.innerHTML = `<span style="color:${ok?'#10B981':'#EF4444'}">${esc(msg)}</span>`; // SEC: msg can carry server error text
 }
 
 // ── Generate single dataset ───────────────────────────────────
@@ -13941,7 +13944,7 @@ function exportCorrespondenceCSV(){
     var cells=[...tr.querySelectorAll('td')].map(function(td){return td.textContent.trim();});
     if(cells.length>=9) rows.push(cells.slice(0,9));
   });
-  var csv=rows.map(function(r){return r.map(function(v){return '"'+String(v).replace(/"/g,'""')+'"';}).join(',');}).join('\n');
+  var csv=rows.map(function(r){return r.map(csvCell).join(',');}).join('\n');
   var a=document.createElement('a');
   a.href='data:text/csv;charset=utf-8,'+encodeURIComponent(csv);
   a.download='Correspondence_'+new Date().toISOString().slice(0,10)+'.csv';
@@ -14332,7 +14335,7 @@ async function exportDataset(id, format){
     if(!data.length){showToast('No data found','error');return;}
 
     if(format==='csv'){
-      const csv=[cols.join(','),...data.map(r=>cols.map(c=>{const v=r[c]; return typeof v==='string'&&v.includes(',')?`"${v}"`:v??'';}).join(','))].join('\n');
+      const csv=[cols.map(csvCell).join(','),...data.map(r=>cols.map(c=>csvCell(r[c])).join(','))].join('\n');
       const blob=new Blob([csv],{type:'text/csv'});
       const url=URL.createObjectURL(blob);
       const a=document.createElement('a'); a.href=url; a.download=`SP360_${label}_${new Date().toISOString().split('T')[0]}.csv`; a.click();

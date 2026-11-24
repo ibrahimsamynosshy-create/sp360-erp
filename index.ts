@@ -71,8 +71,11 @@ type LlmConfig = {
 // ---------------------------------------------------------------------
 // HTTP helpers
 // ---------------------------------------------------------------------
+// SEC: set ALLOWED_ORIGIN secret to the app origin (e.g. https://<user>.github.io) to stop
+// other websites calling this function from a signed-in browser. Falls back to "*" if unset.
 const CORS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Origin": Deno.env.get("ALLOWED_ORIGIN") ?? "*",
+  "Vary": "Origin",
   "Access-Control-Allow-Headers":
     "authorization, x-client-info, apikey, content-type, x-cron-secret",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -699,12 +702,20 @@ const estimateTokens = (s: string) => Math.ceil(s.length / 3.5);
 // ---------------------------------------------------------------------
 // Authorization: cron secret OR signed-in reviewer
 // ---------------------------------------------------------------------
+/** SEC: constant-time string compare for the cron secret (avoids timing side channel). */
+function timingSafeEqual(a: string, b: string): boolean {
+  const ea = new TextEncoder().encode(a), eb = new TextEncoder().encode(b);
+  let diff = ea.length ^ eb.length;
+  for (let i = 0; i < Math.max(ea.length, eb.length); i++) diff |= (ea[i] ?? 0) ^ (eb[i] ?? 0);
+  return diff === 0;
+}
+
 type Caller = { kind: "scheduled"; userId: null } | { kind: "manual"; userId: string };
 
 async function authorize(req: Request, url: string, anonKey: string): Promise<Caller | Response> {
   const cronSecret = Deno.env.get("AI_CRON_SECRET");
   const cronHeader = req.headers.get("x-cron-secret");
-  if (cronSecret && cronHeader && cronHeader === cronSecret) return { kind: "scheduled", userId: null };
+  if (cronSecret && cronHeader && timingSafeEqual(cronHeader, cronSecret)) return { kind: "scheduled", userId: null };
 
   const authHeader = req.headers.get("Authorization") ?? "";
   if (!authHeader.startsWith("Bearer ")) return json({ ok: false, error: "Missing Authorization header" }, 401);
@@ -717,7 +728,10 @@ async function authorize(req: Request, url: string, anonKey: string): Promise<Ca
   if (userErr || !userData?.user) return json({ ok: false, error: "Invalid or expired session" }, 401);
 
   const { data: canReview, error: roleErr } = await userClient.rpc("fn_ai_can_review");
-  if (roleErr) return json({ ok: false, error: `Role check failed: ${roleErr.message}` }, 500);
+  if (roleErr) {
+    console.error("fn_ai_can_review failed:", roleErr.message);   // SEC: keep DB detail in logs, not in the response
+    return json({ ok: false, error: "Role check failed" }, 500);
+  }
   if (canReview !== true) return json({ ok: false, error: "Not authorized — Admin / PMO / CEO only" }, 403);
   return { kind: "manual", userId: userData.user.id };
 }
