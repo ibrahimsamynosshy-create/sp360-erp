@@ -16,8 +16,9 @@
      script-src has NO 'unsafe-inline': all JS is in app.js / supabase.min.js / pinned CDN files with SRI,
      and there are no inline event-handler attributes (event delegation via data-h-* in app.js).
      Do NOT add inline script blocks or inline event-handler attributes: they will be blocked. style-src keeps 'unsafe-inline' (style attributes).
+     script-src is pinned to the exact CDN package paths (a bare cdn.jsdelivr.net host lets an injected tag load ANY npm package).
      frame-ancestors is ignored in <meta>; clickjacking protection needs an HTTP header (Cloudflare/Netlify). -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://sqizirpsatofcoqshwer.supabase.co wss://sqizirpsatofcoqshwer.supabase.co https://cdn.jsdelivr.net; img-src 'self' data: blob:; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"/>
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net/npm/chart.js@4.4.0/ https://cdn.jsdelivr.net/npm/exceljs@4.4.0/ https://cdn.jsdelivr.net/npm/jspdf@2.5.1/ https://cdn.jsdelivr.net/npm/jspdf-autotable@3.8.2/; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; connect-src 'self' https://sqizirpsatofcoqshwer.supabase.co wss://sqizirpsatofcoqshwer.supabase.co https://cdn.jsdelivr.net; img-src 'self' data: blob:; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests"/>
 <link rel="manifest" href="manifest.json"/>
 <!-- Icons (PWA: icon files next to index.html) -->
 <link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png"/>
